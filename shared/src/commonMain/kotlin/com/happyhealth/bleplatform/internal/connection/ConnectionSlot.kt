@@ -42,6 +42,7 @@ class ConnectionSlot(
     private var handshakeRunner: HandshakeRunner? = null
     private var downloadController: DownloadController? = null
     private var downloadEnabled: Boolean = false
+    private var downloadPendingStatusPoll: Boolean = false
 
     // Serialized GATT operation queues (Android allows only one outstanding op at a time)
     private val pendingNotifSubscriptions = mutableListOf<HpyCharId>()
@@ -79,6 +80,7 @@ class ConnectionSlot(
             downloadController = null
         }
         downloadEnabled = false
+        downloadPendingStatusPoll = false
         shim.disconnect(connId)
         transition(HpyConnectionState.DISCONNECTED)
     }
@@ -89,22 +91,28 @@ class ConnectionSlot(
 
     fun startDownload() {
         if (state != HpyConnectionState.READY) return
-        val status = lastStatus ?: return
-        if (status.unsyncedFrames <= 0) {
-            log("No unsynced frames to download")
-            emitEvent(HpyEvent.DownloadComplete(connId, 0))
-            return
-        }
-        beginDownloadSession(status)
+        downloadEnabled = true
+        downloadPendingStatusPoll = true
+        commandQueue.enqueue(QueuedCommand(
+            tag = "DL_GET_DEV_STATUS",
+            charId = HpyCharId.CMD_RX,
+            data = CommandBuilder.buildGetDeviceStatus(),
+            timeoutMs = config.commandTimeoutMs,
+            completionType = CompletionType.ON_NOTIFICATION,
+        ))
     }
 
     fun stopDownload() {
         downloadEnabled = false
+        downloadPendingStatusPoll = false
         if (state == HpyConnectionState.DOWNLOADING) {
             downloadController?.let { shim.l2capClose(connId) }
             downloadController = null
             commandQueue.flush()
-            log("Download stopped by user")
+            log("Download stopped by user (was DOWNLOADING)")
+            transition(HpyConnectionState.READY)
+        } else if (state == HpyConnectionState.WAITING) {
+            log("Download stopped by user (was WAITING)")
             transition(HpyConnectionState.READY)
         }
     }
@@ -130,6 +138,7 @@ class ConnectionSlot(
             downloadController = null
         }
         downloadEnabled = false
+        downloadPendingStatusPoll = false
         if (state != HpyConnectionState.DISCONNECTED) {
             // Unexpected disconnect
             transition(HpyConnectionState.DISCONNECTED)
@@ -309,6 +318,15 @@ class ConnectionSlot(
                 if (status != null) {
                     lastStatus = status
                     emitEvent(HpyEvent.DeviceStatus(connId, status))
+                    if (downloadPendingStatusPoll) {
+                        downloadPendingStatusPoll = false
+                        if (status.unsyncedFrames > 0) {
+                            beginDownloadSession(status)
+                        } else {
+                            log("No unsynced frames — entering WAITING")
+                            transition(HpyConnectionState.WAITING)
+                        }
+                    }
                 }
             }
             CommandId.GET_DAQ_CONFIG -> {
@@ -413,11 +431,12 @@ class ConnectionSlot(
             emitEvent(HpyEvent.DeviceStatus(connId, status))
 
             // Auto-trigger download on SuperframeClose if download is enabled
-            if (state == HpyConnectionState.READY &&
+            if ((state == HpyConnectionState.READY || state == HpyConnectionState.WAITING) &&
                 downloadEnabled &&
                 status.notifSender == CommandId.NOTIF_SENDER_SUPERFRAME_CLOSE &&
                 status.unsyncedFrames > 0
             ) {
+                log("SuperframeClose auto-trigger: ${status.unsyncedFrames} unsynced frames")
                 beginDownloadSession(status)
             }
         }
@@ -442,6 +461,7 @@ class ConnectionSlot(
             batchSize = config.downloadBatchSize,
             maxRetries = config.downloadMaxRetries,
             supportsL2cap = useL2cap,
+            onFrameEmit = { frameData -> emitEvent(HpyEvent.DownloadFrame(connId, frameData)) },
         )
         downloadController = controller
         downloadEnabled = true
@@ -471,6 +491,7 @@ class ConnectionSlot(
     }
 
     fun onL2capFrame(frameData: ByteArray) {
+        emitEvent(HpyEvent.DownloadFrame(connId, frameData))
         val controller = downloadController ?: return
         val action = controller.onFrameReceived()
         handleDownloadAction(action)
@@ -499,8 +520,13 @@ class ConnectionSlot(
             is DownloadAction.EmitEvent -> emitEvent(action.event)
             is DownloadAction.SessionComplete -> {
                 downloadController = null
-                log("Download session complete -> READY")
-                transition(HpyConnectionState.READY)
+                if (downloadEnabled) {
+                    log("Download session complete -> WAITING")
+                    transition(HpyConnectionState.WAITING)
+                } else {
+                    log("Download session complete -> READY")
+                    transition(HpyConnectionState.READY)
+                }
             }
             is DownloadAction.Multiple -> action.actions.forEach { handleDownloadAction(it) }
             is DownloadAction.NoOp -> {}

@@ -80,6 +80,11 @@ sealed class HpyEvent {
         val transport: String = "",
     ) : HpyEvent()
 
+    data class DownloadFrame(
+        override val connId: ConnectionId,
+        val frameData: ByteArray,
+    ) : HpyEvent()
+
     data class DownloadComplete(
         override val connId: ConnectionId,
         val totalFrames: Int,

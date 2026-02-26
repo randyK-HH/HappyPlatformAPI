@@ -46,6 +46,7 @@ internal class DownloadController(
     private val batchSize: Int,
     private val maxRetries: Int,
     private val supportsL2cap: Boolean,
+    private val onFrameEmit: ((ByteArray) -> Unit)? = null,
 ) {
     var phase: DownloadPhase = DownloadPhase.IDLE
         private set
@@ -61,8 +62,6 @@ internal class DownloadController(
     val transportString: String get() = if (usingL2cap) "L2CAP" else "GATT"
 
     private var gattAccumulator: GattFrameAccumulator? = null
-
-    var onFrame: ((ByteArray) -> Unit)? = null
 
     fun startSession(
         syncFrameCount: UInt,
@@ -297,7 +296,7 @@ internal class DownloadController(
 
     private fun startGattPath(): DownloadAction {
         gattAccumulator = GattFrameAccumulator(
-            onFrame = { /* frame data available if needed */ },
+            onFrame = { frameData -> onFrameEmit?.invoke(frameData) },
         )
         return requestNextGattBatch()
     }

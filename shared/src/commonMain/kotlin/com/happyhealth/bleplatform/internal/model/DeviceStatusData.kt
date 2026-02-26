@@ -57,6 +57,9 @@ data class DeviceStatusData(
         else -> "Unknown(0x${notifSender.toString(16)})"
     }
 
+    val bleCiValue: Int get() = bleCi and 0x7F
+    val bleCiUpdateInProgress: Boolean get() = (bleCi and 0x80) != 0
+
     val clockRateString: String get() = when (clockRate) {
         0 -> "16MHz"
         1 -> "48MHz"

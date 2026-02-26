@@ -118,7 +118,7 @@ class HappyPlatformApi internal constructor(
     ): HpyResult {
         val slot = manager.getSlot(connId) ?: return HpyResult.ErrInvalidConnId
         if (slot.state == HpyConnectionState.DISCONNECTED) return HpyResult.ErrNotConnected
-        if (slot.state != HpyConnectionState.READY) return HpyResult.ErrCommandRejected
+        if (slot.state != HpyConnectionState.READY && slot.state != HpyConnectionState.WAITING) return HpyResult.ErrCommandRejected
         if (slot.firmwareTier < minTier) return HpyResult.ErrFwNotSupported
 
         val cmd = QueuedCommand(

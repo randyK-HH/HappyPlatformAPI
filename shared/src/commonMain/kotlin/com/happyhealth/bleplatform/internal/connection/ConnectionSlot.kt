@@ -10,6 +10,7 @@ import com.happyhealth.bleplatform.internal.command.ResponseParser
 import com.happyhealth.bleplatform.internal.command.toHex
 import com.happyhealth.bleplatform.internal.download.DownloadAction
 import com.happyhealth.bleplatform.internal.download.DownloadController
+import com.happyhealth.bleplatform.internal.memfault.MemfaultBuffer
 import com.happyhealth.bleplatform.internal.model.DeviceInfoData
 import com.happyhealth.bleplatform.internal.model.DeviceStatusData
 import com.happyhealth.bleplatform.internal.model.FirmwareTier
@@ -17,6 +18,9 @@ import com.happyhealth.bleplatform.internal.model.HpyCharId
 import com.happyhealth.bleplatform.internal.shim.PlatformBleShim
 import com.happyhealth.bleplatform.internal.shim.PlatformTimeSource
 import com.happyhealth.bleplatform.internal.shim.WriteType
+import com.happyhealth.bleplatform.internal.util.CRC_INIT
+import com.happyhealth.bleplatform.internal.util.finalizeCrc
+import com.happyhealth.bleplatform.internal.util.updateCrc
 import kotlinx.coroutines.CoroutineScope
 
 class ConnectionSlot(
@@ -43,6 +47,13 @@ class ConnectionSlot(
     private var downloadController: DownloadController? = null
     private var downloadEnabled: Boolean = false
     private var downloadPendingStatusPoll: Boolean = false
+
+    // Persists across reconnections — NOT cleared on disconnect
+    private val memfaultBuffer = MemfaultBuffer()
+
+    // Transient per-drain accumulator for memfault STREAM_TX data
+    private var memfaultAccumulator: ByteArray? = null
+    private var memfaultAccumulatorPos: Int = 0
 
     // Serialized GATT operation queues (Android allows only one outstanding op at a time)
     private val pendingNotifSubscriptions = mutableListOf<HpyCharId>()
@@ -81,6 +92,8 @@ class ConnectionSlot(
         }
         downloadEnabled = false
         downloadPendingStatusPoll = false
+        memfaultAccumulator = null
+        memfaultAccumulatorPos = 0
         shim.disconnect(connId)
         transition(HpyConnectionState.DISCONNECTED)
     }
@@ -139,6 +152,8 @@ class ConnectionSlot(
         }
         downloadEnabled = false
         downloadPendingStatusPoll = false
+        memfaultAccumulator = null
+        memfaultAccumulatorPos = 0
         if (state != HpyConnectionState.DISCONNECTED) {
             // Unexpected disconnect
             transition(HpyConnectionState.DISCONNECTED)
@@ -269,6 +284,8 @@ class ConnectionSlot(
             return
         }
 
+        memfaultBuffer.incrementConnectSeq()
+
         // Start handshake
         transition(HpyConnectionState.HANDSHAKING)
         handshakeRunner = HandshakeRunner(firmwareTier, config, timeSource)
@@ -391,6 +408,46 @@ class ConnectionSlot(
                 val next = runner.onCommandComplete()
                 enqueueHandshakeCommand(next)
             }
+            CommandId.GET_FILE_LENGTH -> {
+                val length = ResponseParser.parseGetFileLengthResponse(value)
+                log("HS: GET_FILE_LENGTH (Memfault) length=$length")
+                val next = runner.onMemfaultFileLengthReceived(length)
+                if (next != null && length != null && length > 0u) {
+                    if (!memfaultBuffer.canFitChunk(length.toInt())) {
+                        log("HS: Memfault chunk too large for buffer ($length bytes)")
+                        emitEvent(HpyEvent.Error(connId, HpyErrorCode.MEMFAULT_BUFFER_FULL,
+                            "Memfault chunk exceeds buffer: $length bytes"))
+                        onHandshakeComplete()
+                        return
+                    }
+                    memfaultAccumulator = ByteArray(length.toInt())
+                    memfaultAccumulatorPos = 0
+                }
+                enqueueHandshakeCommand(next)
+            }
+            CommandId.READ_FILE -> {
+                val ringCrc = ResponseParser.parseReadFileCrcResponse(value)
+                val data = memfaultAccumulator
+                val dataLen = memfaultAccumulatorPos
+                var crcValid = false
+                if (data != null && ringCrc != null && dataLen > 0) {
+                    val localCrc = finalizeCrc(updateCrc(CRC_INIT, data, 0, dataLen))
+                    crcValid = (localCrc == ringCrc)
+                }
+                val crcStr = if (crcValid) "OK" else "MISMATCH"
+                log("HS: READ_FILE (Memfault) $dataLen bytes, CRC $crcStr")
+
+                // Write to persistent circular buffer
+                if (data != null && dataLen > 0) {
+                    memfaultBuffer.writeChunk(data.copyOfRange(0, dataLen), crcValid)
+                }
+
+                memfaultAccumulator = null
+                memfaultAccumulatorPos = 0
+
+                val next = runner.onMemfaultReadComplete()
+                enqueueHandshakeCommand(next)
+            }
             else -> {
                 log("HS: Unexpected response 0x${cmdByte.toUByte().toString(16)}")
                 val next = runner.onCommandComplete()
@@ -408,7 +465,14 @@ class ConnectionSlot(
     }
 
     private fun onHandshakeComplete() {
+        val chunksThisDrain = handshakeRunner?.memfaultChunksDownloaded ?: 0
         handshakeRunner = null
+        memfaultAccumulator = null
+        memfaultAccumulatorPos = 0
+        if (chunksThisDrain > 0 || memfaultBuffer.getChunks().isNotEmpty()) {
+            log("Memfault drain complete: $chunksThisDrain new chunks, ${memfaultBuffer.getChunks().size} total in buffer")
+            emitEvent(HpyEvent.MemfaultComplete(connId, chunksThisDrain))
+        }
         log("Handshake complete -> READY")
         transition(HpyConnectionState.READY)
     }
@@ -447,8 +511,13 @@ class ConnectionSlot(
             // STREAM_TX carries GATT frame data during download
             val action = downloadController?.onStreamTxData(value) ?: return
             handleDownloadAction(action)
+        } else if (state == HpyConnectionState.HANDSHAKING && memfaultAccumulator != null) {
+            // Accumulate memfault chunk data from STREAM_TX
+            val buf = memfaultAccumulator!!
+            val copyLen = minOf(value.size, buf.size - memfaultAccumulatorPos)
+            value.copyInto(buf, memfaultAccumulatorPos, 0, copyLen)
+            memfaultAccumulatorPos += copyLen
         }
-        // TODO: Memfault chunk data when not downloading
     }
 
     // ---- Download ----

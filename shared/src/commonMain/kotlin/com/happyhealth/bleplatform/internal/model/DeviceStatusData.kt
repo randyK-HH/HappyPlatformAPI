@@ -63,4 +63,63 @@ data class DeviceStatusData(
         2 -> "96MHz"
         else -> "Unknown($clockRate)"
     }
+
+    val chargerStateString: String get() = when (chargerState) {
+        0 -> "NoCharger"
+        1 -> "ChargerDetected"
+        2 -> "ChargerReady"
+        else -> "Unknown($chargerState)"
+    }
+
+    val chargingStateString: String get() = when (chargingState) {
+        0 -> "NotCharging"
+        1 -> "PreCharge"
+        2 -> "FastCharge"
+        3 -> "TopOff"
+        4 -> "Done"
+        else -> "Unknown($chargingState)"
+    }
+
+    val chargingModeString: String get() = when (chargingMode) {
+        0 -> "Off"
+        1 -> "On"
+        else -> "Unknown($chargingMode)"
+    }
+
+    val chargerBlockedReasonString: String get() = when (chargerBlockedReason) {
+        0 -> "None"
+        else -> "0x${chargerBlockedReason.toString(16)}"
+    }
+
+    val chargerStatusString: String get() = "0x${chargerStatus.toString(16).uppercase().padStart(2, '0')}"
+
+    val opportunisticSamplingStateString: String get() = when (opportunisticSamplingState) {
+        0 -> "Off"
+        1 -> "On"
+        else -> "Unknown($opportunisticSamplingState)"
+    }
+
+    val shipModeStatusString: String get() = when (shipModeStatus) {
+        0 -> "Normal"
+        1 -> "ShipMode"
+        else -> "Unknown($shipModeStatus)"
+    }
+
+    val sleepStateString: String get() = when (sleepState) {
+        0 -> "Awake"
+        1 -> "Sleeping"
+        else -> "Unknown($sleepState)"
+    }
+
+    val pseudoRingOnOffString: String get() = when (pseudoRingOnOff) {
+        0 -> "Off"
+        1 -> "On"
+        else -> "Unknown($pseudoRingOnOff)"
+    }
+
+    val bootHandshakeFlagString: String get() = when (bootHandshakeFlag) {
+        0 -> "NotDone"
+        1 -> "Done"
+        else -> "Unknown($bootHandshakeFlag)"
+    }
 }

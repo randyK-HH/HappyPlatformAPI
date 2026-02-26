@@ -1,5 +1,6 @@
 package com.happyhealth.bleplatform.api
 
+import com.happyhealth.bleplatform.internal.command.ResponseParser
 import com.happyhealth.bleplatform.internal.model.DaqConfigData
 import com.happyhealth.bleplatform.internal.model.DeviceInfoData
 import com.happyhealth.bleplatform.internal.model.DeviceStatusData
@@ -35,6 +36,11 @@ sealed class HpyEvent {
     data class DaqConfig(
         override val connId: ConnectionId,
         val config: DaqConfigData,
+    ) : HpyEvent()
+
+    data class ExtendedDeviceStatus(
+        override val connId: ConnectionId,
+        val extStatus: ResponseParser.ExtendedDeviceStatus,
     ) : HpyEvent()
 
     data class CommandResult(

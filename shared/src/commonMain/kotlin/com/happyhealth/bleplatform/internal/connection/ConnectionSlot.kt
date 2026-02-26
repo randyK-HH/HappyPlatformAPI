@@ -271,6 +271,12 @@ class ConnectionSlot(
                     emitEvent(HpyEvent.DaqConfig(connId, config))
                 }
             }
+            CommandId.GET_EXTENDED_DEVICE_STATUS -> {
+                val ext = ResponseParser.parseExtendedDeviceStatus(value)
+                if (ext != null) {
+                    emitEvent(HpyEvent.ExtendedDeviceStatus(connId, ext))
+                }
+            }
             else -> {
                 emitEvent(HpyEvent.CommandResult(connId, cmdByte, value.copyOf()))
             }

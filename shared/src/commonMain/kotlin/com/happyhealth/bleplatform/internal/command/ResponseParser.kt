@@ -65,7 +65,17 @@ object ResponseParser {
     data class ExtendedDeviceStatus(
         val bpState: Int,
         val bpTimeLeftSec: Int,
-    )
+    ) {
+        val bpStateString: String get() = when (bpState) {
+            0 -> "Init"
+            1 -> "Off"
+            2 -> "On"
+            3 -> "Bonus On"
+            4 -> "Done"
+            5 -> "Done Wait"
+            else -> "Unknown($bpState)"
+        }
+    }
 
     fun parseExtendedDeviceStatus(value: ByteArray): ExtendedDeviceStatus? {
         if (value.size < 4) return null

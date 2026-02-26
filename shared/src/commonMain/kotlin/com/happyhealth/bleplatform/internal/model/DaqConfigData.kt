@@ -65,4 +65,10 @@ data class DaqConfigData(
         26 -> "RGBIR_100_ACC_104_2G"
         else -> "Unknown($mode)"
     }
+
+    val csModeString: String get() = when (csMode) {
+        0 -> "Off"
+        1 -> "On"
+        else -> "Unknown($csMode)"
+    }
 }

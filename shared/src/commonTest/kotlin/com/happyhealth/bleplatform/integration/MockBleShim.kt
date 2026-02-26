@@ -62,6 +62,10 @@ class MockBleShim : PlatformBleShim {
 
     override fun readRssi(connId: ConnectionId) {}
 
+    override fun l2capOpen(connId: ConnectionId, psm: Int) {}
+    override fun l2capStartReceiving(connId: ConnectionId, expectedFrames: Int) {}
+    override fun l2capClose(connId: ConnectionId) {}
+
     // ---- Test helpers ----
 
     fun simulateDisReads(connId: ConnectionId, fwVersion: String) {

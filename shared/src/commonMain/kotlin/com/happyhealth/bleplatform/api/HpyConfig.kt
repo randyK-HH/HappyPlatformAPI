@@ -6,5 +6,6 @@ data class HpyConfig(
     val requestedMtu: Int = 247,
     val downloadBatchSize: Int = 64,
     val downloadMaxRetries: Int = 1,
+    val preferL2capDownload: Boolean = true,
     val minRssi: Int = -80,
 )

@@ -73,6 +73,13 @@ sealed class HpyEvent {
         val crcValid: Boolean,
     ) : HpyEvent()
 
+    data class DownloadProgress(
+        override val connId: ConnectionId,
+        val framesDownloaded: Int,
+        val framesTotal: Int,
+        val transport: String = "",
+    ) : HpyEvent()
+
     data class DownloadComplete(
         override val connId: ConnectionId,
         val totalFrames: Int,

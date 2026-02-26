@@ -7,7 +7,13 @@ import android.content.Context
 import android.os.ParcelUuid
 import android.util.Log
 import com.happyhealth.bleplatform.api.ConnectionId
+import com.happyhealth.bleplatform.internal.command.CommandId
+import com.happyhealth.bleplatform.internal.command.readUInt32
 import com.happyhealth.bleplatform.internal.model.HpyCharId
+import com.happyhealth.bleplatform.internal.util.CRC_INIT
+import com.happyhealth.bleplatform.internal.util.finalizeCrc
+import com.happyhealth.bleplatform.internal.util.updateCrc
+import kotlinx.coroutines.*
 
 private const val TAG = "AndroidBleShim"
 
@@ -25,6 +31,11 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
     // Per-connection GATT handles
     private val gattMap = mutableMapOf<Int, BluetoothGatt>()
     private val deviceMap = mutableMapOf<Int, BluetoothDevice>()
+
+    // L2CAP state per connection
+    private val l2capSockets = mutableMapOf<Int, BluetoothSocket>()
+    private val l2capJobs = mutableMapOf<Int, Job>()
+    private val l2capScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // ---- Scanning ----
 
@@ -155,6 +166,131 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
 
     override fun readRssi(connId: ConnectionId) {
         gattMap[connId.value]?.readRemoteRssi()
+    }
+
+    // ---- L2CAP ----
+
+    override fun l2capOpen(connId: ConnectionId, psm: Int) {
+        l2capScope.launch {
+            val device = deviceMap[connId.value]
+            if (device == null) {
+                callback?.onL2capError(connId, "No device for connId=$connId")
+                return@launch
+            }
+            try {
+                val socket = device.createInsecureL2capChannel(psm)
+                socket.connect()
+                l2capSockets[connId.value] = socket
+                Log.d(TAG, "[${connId}] L2CAP socket connected (PSM=$psm)")
+                callback?.onL2capConnected(connId)
+            } catch (e: Exception) {
+                Log.e(TAG, "[${connId}] L2CAP connect failed: ${e.message}")
+                callback?.onL2capError(connId, "L2CAP connect failed: ${e.message}")
+            }
+        }
+    }
+
+    override fun l2capStartReceiving(connId: ConnectionId, expectedFrames: Int) {
+        val socket = l2capSockets[connId.value]
+        if (socket == null) {
+            callback?.onL2capError(connId, "No L2CAP socket for connId=$connId")
+            return
+        }
+        l2capJobs[connId.value]?.cancel()
+        l2capJobs[connId.value] = l2capScope.launch {
+            val inputStream = socket.inputStream
+            val readBuf = ByteArray(512)
+            val buf0 = ByteArray(CommandId.FRAME_SIZE)
+            val buf1 = ByteArray(CommandId.FRAME_SIZE)
+            var bufState = 0
+            var buf0Cnt = 0
+            var buf1Cnt = 0
+            var framesReceived = 0
+            var runningCrc: UInt = CRC_INIT
+            var batchDone = false
+
+            try {
+                while (isActive && !batchDone) {
+                    val bytesRead = inputStream.read(readBuf)
+                    if (bytesRead <= 0) break
+
+                    var offset = 0
+                    var remaining = bytesRead
+
+                    while (remaining > 0) {
+                        if (framesReceived >= expectedFrames) {
+                            // Accumulate CRC packet (5 bytes)
+                            val residualBuf = if (bufState == 0) buf0 else buf1
+                            val residualCnt = if (bufState == 0) buf0Cnt else buf1Cnt
+                            val toCopy = minOf(remaining, 5 - residualCnt)
+                            if (toCopy > 0) {
+                                readBuf.copyInto(residualBuf, residualCnt, offset, offset + toCopy)
+                                if (bufState == 0) buf0Cnt += toCopy else buf1Cnt += toCopy
+                                offset += toCopy
+                                remaining -= toCopy
+                            }
+                            val newCnt = if (bufState == 0) buf0Cnt else buf1Cnt
+                            if (newCnt >= 5) {
+                                val receivedCrc = readUInt32(residualBuf, 0)
+                                val finalCrc = finalizeCrc(runningCrc)
+                                val crcValid = (finalCrc == receivedCrc)
+                                Log.d(TAG, "[${connId}] L2CAP CRC: computed=0x${finalCrc.toString(16)} received=0x${receivedCrc.toString(16)} valid=$crcValid")
+                                batchDone = true
+                                callback?.onL2capBatchComplete(connId, framesReceived, crcValid)
+                            }
+                            break
+                        }
+
+                        if (bufState == 0) {
+                            val space = CommandId.FRAME_SIZE - buf0Cnt
+                            val toCopy = minOf(remaining, space)
+                            readBuf.copyInto(buf0, buf0Cnt, offset, offset + toCopy)
+                            buf0Cnt += toCopy
+                            offset += toCopy
+                            remaining -= toCopy
+
+                            if (buf0Cnt >= CommandId.FRAME_SIZE) {
+                                runningCrc = updateCrc(runningCrc, buf0, 0, CommandId.FRAME_SIZE)
+                                framesReceived++
+                                callback?.onL2capFrame(connId, buf0.copyOf())
+                                bufState = 1
+                                buf1Cnt = 0
+                            }
+                        } else {
+                            val space = CommandId.FRAME_SIZE - buf1Cnt
+                            val toCopy = minOf(remaining, space)
+                            readBuf.copyInto(buf1, buf1Cnt, offset, offset + toCopy)
+                            buf1Cnt += toCopy
+                            offset += toCopy
+                            remaining -= toCopy
+
+                            if (buf1Cnt >= CommandId.FRAME_SIZE) {
+                                runningCrc = updateCrc(runningCrc, buf1, 0, CommandId.FRAME_SIZE)
+                                framesReceived++
+                                callback?.onL2capFrame(connId, buf1.copyOf())
+                                bufState = 0
+                                buf0Cnt = 0
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                if (isActive) {
+                    Log.e(TAG, "[${connId}] L2CAP read error: ${e.message}")
+                    callback?.onL2capError(connId, "L2CAP read error: ${e.message}")
+                }
+            }
+        }
+    }
+
+    override fun l2capClose(connId: ConnectionId) {
+        l2capJobs[connId.value]?.cancel()
+        l2capJobs.remove(connId.value)
+        try {
+            l2capSockets[connId.value]?.close()
+        } catch (_: Exception) {}
+        l2capSockets.remove(connId.value)
+        Log.d(TAG, "[${connId}] L2CAP closed")
     }
 
     fun getBluetoothDevice(connId: ConnectionId): BluetoothDevice? = deviceMap[connId.value]

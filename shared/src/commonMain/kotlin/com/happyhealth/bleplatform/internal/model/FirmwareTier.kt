@@ -42,7 +42,8 @@ enum class FirmwareTier {
             val project = parts[0].toIntOrNull() ?: return false
             val major = parts[1].toIntOrNull() ?: return false
             val minor = parts[2].toIntOrNull() ?: return false
-            val build = parts[3].toIntOrNull() ?: return false
+            // Build part may have a git-describe suffix (e.g. "78-0-g3a8a025b")
+            val build = parts[3].substringBefore('-').toIntOrNull() ?: return false
 
             if (project != 2 || major != 5) return project > 2
 

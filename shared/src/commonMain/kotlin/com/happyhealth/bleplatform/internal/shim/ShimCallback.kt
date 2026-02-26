@@ -24,4 +24,9 @@ interface ShimCallback {
     fun onMtuChanged(connId: ConnectionId, mtu: Int)
 
     fun onRssiRead(connId: ConnectionId, rssi: Int)
+
+    fun onL2capConnected(connId: ConnectionId)
+    fun onL2capFrame(connId: ConnectionId, frameData: ByteArray)
+    fun onL2capBatchComplete(connId: ConnectionId, framesReceived: Int, crcValid: Boolean)
+    fun onL2capError(connId: ConnectionId, message: String)
 }

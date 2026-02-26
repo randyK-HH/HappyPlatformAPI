@@ -135,6 +135,22 @@ class ConnectionManager(
         // Emit as event if needed
     }
 
+    override fun onL2capConnected(connId: ConnectionId) {
+        getSlot(connId)?.onL2capConnected()
+    }
+
+    override fun onL2capFrame(connId: ConnectionId, frameData: ByteArray) {
+        getSlot(connId)?.onL2capFrame(frameData)
+    }
+
+    override fun onL2capBatchComplete(connId: ConnectionId, framesReceived: Int, crcValid: Boolean) {
+        getSlot(connId)?.onL2capBatchComplete(framesReceived, crcValid)
+    }
+
+    override fun onL2capError(connId: ConnectionId, message: String) {
+        getSlot(connId)?.onL2capError(message)
+    }
+
     fun destroy() {
         scanStop()
         for (i in slots.indices) {

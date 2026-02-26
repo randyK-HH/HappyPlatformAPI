@@ -75,6 +75,26 @@ class HappyPlatformApi internal constructor(
         return enqueueHcsCommand(connId, "GET_EXT_STATUS", CommandBuilder.buildGetExtendedDeviceStatus(), FirmwareTier.TIER_2)
     }
 
+    fun setFingerDetection(connId: ConnectionId, enable: Boolean): HpyResult {
+        return enqueueHcsCommand(connId, "SET_FINGER_DET", CommandBuilder.buildSetFingerDetection(enable), FirmwareTier.TIER_2)
+    }
+
+    // ---- Download ----
+
+    fun startDownload(connId: ConnectionId): HpyResult {
+        val slot = manager.getSlot(connId) ?: return HpyResult.ErrInvalidConnId
+        if (slot.state != HpyConnectionState.READY) return HpyResult.ErrCommandRejected
+        if (slot.firmwareTier < FirmwareTier.TIER_1) return HpyResult.ErrFwNotSupported
+        slot.startDownload()
+        return HpyResult.Ok
+    }
+
+    fun stopDownload(connId: ConnectionId): HpyResult {
+        val slot = manager.getSlot(connId) ?: return HpyResult.ErrInvalidConnId
+        slot.stopDownload()
+        return HpyResult.Ok
+    }
+
     fun getActiveConnections(): List<ConnectionId> {
         return manager.getActiveConnections().map { it.connId }
     }
@@ -122,6 +142,9 @@ fun createHappyPlatformApi(
         commandTimeoutMs = config.commandTimeoutMs,
         skipFingerDetection = config.skipFingerDetection,
         requestedMtu = config.requestedMtu,
+        downloadBatchSize = config.downloadBatchSize,
+        downloadMaxRetries = config.downloadMaxRetries,
+        preferL2capDownload = config.preferL2capDownload,
     )
     val manager = ConnectionManager(shim, timeSource, scope, connConfig)
     return HappyPlatformApi(manager, scope)

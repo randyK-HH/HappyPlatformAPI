@@ -43,8 +43,8 @@ object CommandBuilder {
         return cmd
     }
 
-    fun buildSetFingerDetection(): ByteArray =
-        byteArrayOf(CommandId.SET_FINGER_DETECTION, 0x01)
+    fun buildSetFingerDetection(enable: Boolean = true): ByteArray =
+        byteArrayOf(CommandId.SET_FINGER_DETECTION, if (enable) 0x01 else 0x00)
 
     fun buildConfigureL2cap(listen: Boolean, turbo48: Boolean): ByteArray {
         return byteArrayOf(

@@ -8,6 +8,8 @@ import com.happyhealth.bleplatform.internal.command.CommandBuilder
 import com.happyhealth.bleplatform.internal.command.CommandId
 import com.happyhealth.bleplatform.internal.command.ResponseParser
 import com.happyhealth.bleplatform.internal.command.toHex
+import com.happyhealth.bleplatform.internal.download.DownloadAction
+import com.happyhealth.bleplatform.internal.download.DownloadController
 import com.happyhealth.bleplatform.internal.model.DeviceInfoData
 import com.happyhealth.bleplatform.internal.model.DeviceStatusData
 import com.happyhealth.bleplatform.internal.model.FirmwareTier
@@ -38,6 +40,8 @@ class ConnectionSlot(
     private var deviceHandle: Any? = null
     private var availableChars: Set<HpyCharId> = emptySet()
     private var handshakeRunner: HandshakeRunner? = null
+    private var downloadController: DownloadController? = null
+    private var downloadEnabled: Boolean = false
 
     // Serialized GATT operation queues (Android allows only one outstanding op at a time)
     private val pendingNotifSubscriptions = mutableListOf<HpyCharId>()
@@ -68,15 +72,41 @@ class ConnectionSlot(
     }
 
     fun disconnect() {
-        val prevState = state
         commandQueue.flush()
         handshakeRunner = null
+        if (downloadController != null) {
+            shim.l2capClose(connId)
+            downloadController = null
+        }
+        downloadEnabled = false
         shim.disconnect(connId)
         transition(HpyConnectionState.DISCONNECTED)
     }
 
     fun enqueueCommand(command: QueuedCommand): Boolean {
         return commandQueue.enqueue(command)
+    }
+
+    fun startDownload() {
+        if (state != HpyConnectionState.READY) return
+        val status = lastStatus ?: return
+        if (status.unsyncedFrames <= 0) {
+            log("No unsynced frames to download")
+            emitEvent(HpyEvent.DownloadComplete(connId, 0))
+            return
+        }
+        beginDownloadSession(status)
+    }
+
+    fun stopDownload() {
+        downloadEnabled = false
+        if (state == HpyConnectionState.DOWNLOADING) {
+            downloadController?.let { shim.l2capClose(connId) }
+            downloadController = null
+            commandQueue.flush()
+            log("Download stopped by user")
+            transition(HpyConnectionState.READY)
+        }
     }
 
     // ---- Shim callbacks ----
@@ -95,6 +125,11 @@ class ConnectionSlot(
         log("Disconnected (status=$status)")
         commandQueue.flush()
         handshakeRunner = null
+        if (downloadController != null) {
+            shim.l2capClose(connId)
+            downloadController = null
+        }
+        downloadEnabled = false
         if (state != HpyConnectionState.DISCONNECTED) {
             // Unexpected disconnect
             transition(HpyConnectionState.DISCONNECTED)
@@ -129,7 +164,7 @@ class ConnectionSlot(
     }
 
     fun onCharacteristicRead(charId: HpyCharId, value: ByteArray) {
-        val str = value.decodeToString()
+        val str = value.decodeToString().trimEnd('\u0000')
         when (charId) {
             HpyCharId.DIS_SERIAL_NUMBER -> disSerialNumber = str
             HpyCharId.DIS_FW_VERSION -> disFwVersion = str
@@ -153,7 +188,7 @@ class ConnectionSlot(
             HpyCharId.CMD_TX -> handleCommandResponse(value)
             HpyCharId.DEBUG_TX -> emitEvent(HpyEvent.DebugMessage(connId, value.copyOf()))
             HpyCharId.FRAME_TX -> handleFrameTxNotification(value)
-            HpyCharId.STREAM_TX -> { /* Handled by download/memfault controllers */ }
+            HpyCharId.STREAM_TX -> handleStreamTxNotification(value)
             HpyCharId.SUOTA_STATUS -> { /* Handled by FW update controller */ }
             else -> {}
         }
@@ -244,6 +279,11 @@ class ConnectionSlot(
         // Check for unrecognized command
         if (cmdByte == CommandId.UNRECOGNIZED_RESPONSE) {
             emitEvent(HpyEvent.Error(connId, HpyErrorCode.COMMAND_UNRECOGNIZED, "Unrecognized command"))
+            if (state == HpyConnectionState.DOWNLOADING) {
+                // Route to download controller so it can fall back (e.g. L2CAP → GATT)
+                handleDownloadCommandResponse(cmdByte, value)
+                return
+            }
             commandQueue.signalDone()
             return
         }
@@ -251,6 +291,12 @@ class ConnectionSlot(
         // If in handshake, route to handshake runner
         if (state == HpyConnectionState.HANDSHAKING) {
             handleHandshakeResponse(cmdByte, value)
+            return
+        }
+
+        // If downloading, route to download controller
+        if (state == HpyConnectionState.DOWNLOADING) {
+            handleDownloadCommandResponse(cmdByte, value)
             return
         }
 
@@ -350,15 +396,115 @@ class ConnectionSlot(
     }
 
     private fun handleFrameTxNotification(value: ByteArray) {
-        // In READY state, Frame TX carries autonomous device status notifications
-        if (state == HpyConnectionState.READY || state == HpyConnectionState.HANDSHAKING) {
-            val status = ResponseParser.parseDeviceStatus(value)
-            if (status != null) {
-                lastStatus = status
-                emitEvent(HpyEvent.DeviceStatus(connId, status))
+        // During GATT download, FRAME_TX carries the final CRC response [0x17, CRC32_LE, status]
+        if (state == HpyConnectionState.DOWNLOADING && value.isNotEmpty() &&
+            value[0] == CommandId.GET_FRAMES
+        ) {
+            val controller = downloadController ?: return
+            val action = controller.onCommandResponse(value[0], value)
+            handleDownloadAction(action)
+            return
+        }
+
+        // FRAME_TX normally carries autonomous device status notifications
+        val status = ResponseParser.parseDeviceStatus(value)
+        if (status != null) {
+            lastStatus = status
+            emitEvent(HpyEvent.DeviceStatus(connId, status))
+
+            // Auto-trigger download on SuperframeClose if download is enabled
+            if (state == HpyConnectionState.READY &&
+                downloadEnabled &&
+                status.notifSender == CommandId.NOTIF_SENDER_SUPERFRAME_CLOSE &&
+                status.unsyncedFrames > 0
+            ) {
+                beginDownloadSession(status)
             }
         }
-        // In DOWNLOADING state, this would be GATT frame data (future)
+    }
+
+    private fun handleStreamTxNotification(value: ByteArray) {
+        if (state == HpyConnectionState.DOWNLOADING) {
+            // STREAM_TX carries GATT frame data during download
+            val action = downloadController?.onStreamTxData(value) ?: return
+            handleDownloadAction(action)
+        }
+        // TODO: Memfault chunk data when not downloading
+    }
+
+    // ---- Download ----
+
+    private fun beginDownloadSession(status: DeviceStatusData) {
+        log("L2CAP check: fw='${deviceInfo.fwVersion}', supportsL2cap=${deviceInfo.supportsL2capDownload}, preferL2cap=${config.preferL2capDownload}")
+        val useL2cap = deviceInfo.supportsL2capDownload && config.preferL2capDownload
+        val controller = DownloadController(
+            connId = connId,
+            batchSize = config.downloadBatchSize,
+            maxRetries = config.downloadMaxRetries,
+            supportsL2cap = useL2cap,
+        )
+        downloadController = controller
+        downloadEnabled = true
+        transition(HpyConnectionState.DOWNLOADING)
+        log("Download starting: ${status.unsyncedFrames} frames, transport=${if (useL2cap) "L2CAP" else "GATT"}")
+
+        val action = controller.startSession(
+            syncFrameCount = status.syncFrameCount,
+            syncFrameReboots = status.syncFrameReboots,
+            unsyncedFrames = status.unsyncedFrames,
+        )
+        handleDownloadAction(action)
+    }
+
+    private fun handleDownloadCommandResponse(cmdByte: Byte, value: ByteArray) {
+        val controller = downloadController ?: return
+        commandQueue.signalDone()
+        val action = controller.onCommandResponse(cmdByte, value)
+        handleDownloadAction(action)
+    }
+
+    fun onL2capConnected() {
+        val controller = downloadController ?: return
+        log("L2CAP socket connected")
+        val action = controller.onL2capConnected()
+        handleDownloadAction(action)
+    }
+
+    fun onL2capFrame(frameData: ByteArray) {
+        val controller = downloadController ?: return
+        val action = controller.onFrameReceived()
+        handleDownloadAction(action)
+    }
+
+    fun onL2capBatchComplete(framesReceived: Int, crcValid: Boolean) {
+        val controller = downloadController ?: return
+        log("L2CAP batch complete: $framesReceived frames, CRC valid=$crcValid")
+        val action = controller.onL2capBatchComplete(framesReceived, crcValid)
+        handleDownloadAction(action)
+    }
+
+    fun onL2capError(message: String) {
+        val controller = downloadController ?: return
+        log("L2CAP error: $message")
+        val action = controller.onL2capError(message)
+        handleDownloadAction(action)
+    }
+
+    private fun handleDownloadAction(action: DownloadAction) {
+        when (action) {
+            is DownloadAction.EnqueueCommand -> commandQueue.enqueue(action.cmd)
+            is DownloadAction.OpenL2cap -> shim.l2capOpen(connId, action.psm)
+            is DownloadAction.StartL2capReceive -> shim.l2capStartReceiving(connId, action.expectedFrames)
+            is DownloadAction.CloseL2cap -> shim.l2capClose(connId)
+            is DownloadAction.EmitEvent -> emitEvent(action.event)
+            is DownloadAction.SessionComplete -> {
+                downloadController = null
+                log("Download session complete -> READY")
+                transition(HpyConnectionState.READY)
+            }
+            is DownloadAction.Multiple -> action.actions.forEach { handleDownloadAction(it) }
+            is DownloadAction.NoOp -> {}
+        }
     }
 
     private fun sendCommand(cmd: QueuedCommand) {

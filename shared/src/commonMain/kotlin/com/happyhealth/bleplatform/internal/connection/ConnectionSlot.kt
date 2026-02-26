@@ -1,0 +1,375 @@
+package com.happyhealth.bleplatform.internal.connection
+
+import com.happyhealth.bleplatform.api.ConnectionId
+import com.happyhealth.bleplatform.api.HpyConnectionState
+import com.happyhealth.bleplatform.api.HpyErrorCode
+import com.happyhealth.bleplatform.api.HpyEvent
+import com.happyhealth.bleplatform.internal.command.CommandBuilder
+import com.happyhealth.bleplatform.internal.command.CommandId
+import com.happyhealth.bleplatform.internal.command.ResponseParser
+import com.happyhealth.bleplatform.internal.command.toHex
+import com.happyhealth.bleplatform.internal.model.DeviceInfoData
+import com.happyhealth.bleplatform.internal.model.DeviceStatusData
+import com.happyhealth.bleplatform.internal.model.FirmwareTier
+import com.happyhealth.bleplatform.internal.model.HpyCharId
+import com.happyhealth.bleplatform.internal.shim.PlatformBleShim
+import com.happyhealth.bleplatform.internal.shim.PlatformTimeSource
+import com.happyhealth.bleplatform.internal.shim.WriteType
+import kotlinx.coroutines.CoroutineScope
+
+class ConnectionSlot(
+    val connId: ConnectionId,
+    private val shim: PlatformBleShim,
+    private val timeSource: PlatformTimeSource,
+    private val config: ConnectionConfig,
+    private val scope: CoroutineScope,
+    private val emitEvent: (HpyEvent) -> Unit,
+) {
+    var state: HpyConnectionState = HpyConnectionState.IDLE
+        private set
+
+    var deviceInfo: DeviceInfoData = DeviceInfoData()
+        private set
+    var lastStatus: DeviceStatusData? = null
+        private set
+    var firmwareTier: FirmwareTier = FirmwareTier.TIER_0
+        private set
+
+    private var deviceHandle: Any? = null
+    private var availableChars: Set<HpyCharId> = emptySet()
+    private var handshakeRunner: HandshakeRunner? = null
+
+    // Serialized GATT operation queues (Android allows only one outstanding op at a time)
+    private val pendingNotifSubscriptions = mutableListOf<HpyCharId>()
+    private val pendingDisReads = mutableListOf<HpyCharId>()
+
+    // Track which DIS chars we've read
+    private var disSerialNumber: String = ""
+    private var disFwVersion: String = ""
+    private var disSwVersion: String = ""
+    private var disManufacturerName: String = ""
+    private var disModelNumber: String = ""
+
+    private val commandQueue = CommandQueue(
+        onSend = { cmd -> sendCommand(cmd) },
+        onTimeout = { cmd ->
+            log("Command timeout: ${cmd.tag}")
+            emitEvent(HpyEvent.Error(connId, HpyErrorCode.COMMAND_TIMEOUT, "Command timeout: ${cmd.tag}"))
+        },
+    )
+
+    // ---- Public actions ----
+
+    fun connect(handle: Any) {
+        if (state != HpyConnectionState.IDLE && state != HpyConnectionState.DISCONNECTED) return
+        deviceHandle = handle
+        transition(HpyConnectionState.CONNECTING)
+        shim.connect(connId, handle)
+    }
+
+    fun disconnect() {
+        val prevState = state
+        commandQueue.flush()
+        handshakeRunner = null
+        shim.disconnect(connId)
+        transition(HpyConnectionState.DISCONNECTED)
+    }
+
+    fun enqueueCommand(command: QueuedCommand): Boolean {
+        return commandQueue.enqueue(command)
+    }
+
+    // ---- Shim callbacks ----
+
+    fun onConnected() {
+        log("Connected")
+        shim.requestMtu(connId, config.requestedMtu)
+    }
+
+    fun onMtuChanged(mtu: Int) {
+        log("MTU negotiated: $mtu")
+        shim.discoverServices(connId)
+    }
+
+    fun onDisconnected(status: Int) {
+        log("Disconnected (status=$status)")
+        commandQueue.flush()
+        handshakeRunner = null
+        if (state != HpyConnectionState.DISCONNECTED) {
+            // Unexpected disconnect
+            transition(HpyConnectionState.DISCONNECTED)
+        }
+    }
+
+    fun onServicesDiscovered(chars: Set<HpyCharId>) {
+        availableChars = chars
+        log("Services discovered: ${chars.size} characteristics")
+
+        // Validate required services
+        if (HpyCharId.CMD_RX !in chars || HpyCharId.CMD_TX !in chars) {
+            log("ERROR: Required HCS characteristics missing")
+            emitEvent(HpyEvent.Error(connId, HpyErrorCode.CONNECT_FAIL, "HCS service missing"))
+            shim.disconnect(connId)
+            transition(HpyConnectionState.DISCONNECTED)
+            return
+        }
+
+        // Subscribe to notifications
+        subscribeNotifications()
+    }
+
+    fun onDescriptorWritten(charId: HpyCharId, status: Int) {
+        // Process next pending notification subscription, or move on to DIS reads
+        if (pendingNotifSubscriptions.isNotEmpty()) {
+            val next = pendingNotifSubscriptions.removeFirst()
+            shim.subscribeNotifications(connId, next, true)
+        } else {
+            startDisReads()
+        }
+    }
+
+    fun onCharacteristicRead(charId: HpyCharId, value: ByteArray) {
+        val str = value.decodeToString()
+        when (charId) {
+            HpyCharId.DIS_SERIAL_NUMBER -> disSerialNumber = str
+            HpyCharId.DIS_FW_VERSION -> disFwVersion = str
+            HpyCharId.DIS_SW_VERSION -> disSwVersion = str
+            HpyCharId.DIS_MANUFACTURER_NAME -> disManufacturerName = str
+            HpyCharId.DIS_MODEL_NUMBER -> disModelNumber = str
+            else -> {}
+        }
+
+        // Read next DIS char, or finish when all done
+        if (pendingDisReads.isNotEmpty()) {
+            val next = pendingDisReads.removeFirst()
+            shim.readCharacteristic(connId, next)
+        } else {
+            onAllDisReadsComplete()
+        }
+    }
+
+    fun onCharacteristicChanged(charId: HpyCharId, value: ByteArray) {
+        when (charId) {
+            HpyCharId.CMD_TX -> handleCommandResponse(value)
+            HpyCharId.DEBUG_TX -> emitEvent(HpyEvent.DebugMessage(connId, value.copyOf()))
+            HpyCharId.FRAME_TX -> handleFrameTxNotification(value)
+            HpyCharId.STREAM_TX -> { /* Handled by download/memfault controllers */ }
+            HpyCharId.SUOTA_STATUS -> { /* Handled by FW update controller */ }
+            else -> {}
+        }
+    }
+
+    fun onWriteComplete(charId: HpyCharId, status: Int) {
+        val cmd = commandQueue.currentCommand ?: return
+        if (cmd.completionType == CompletionType.ON_WRITE_ACK) {
+            commandQueue.signalDone()
+        }
+        // ON_NOTIFICATION commands wait for the notification response
+    }
+
+    // ---- Internal ----
+
+    private fun subscribeNotifications() {
+        // Build list of chars to subscribe — send first one, queue the rest
+        val charsToSubscribe = mutableListOf(HpyCharId.CMD_TX)
+        if (HpyCharId.STREAM_TX in availableChars) charsToSubscribe.add(HpyCharId.STREAM_TX)
+        if (HpyCharId.DEBUG_TX in availableChars) charsToSubscribe.add(HpyCharId.DEBUG_TX)
+        if (HpyCharId.FRAME_TX in availableChars) charsToSubscribe.add(HpyCharId.FRAME_TX)
+        if (HpyCharId.SUOTA_STATUS in availableChars) charsToSubscribe.add(HpyCharId.SUOTA_STATUS)
+
+        // Send first, queue the rest — each onDescriptorWritten sends the next
+        val first = charsToSubscribe.removeFirst()
+        pendingNotifSubscriptions.clear()
+        pendingNotifSubscriptions.addAll(charsToSubscribe)
+        shim.subscribeNotifications(connId, first, true)
+    }
+
+    private fun startDisReads() {
+        val disChars = mutableListOf(
+            HpyCharId.DIS_SERIAL_NUMBER,
+            HpyCharId.DIS_FW_VERSION,
+            HpyCharId.DIS_SW_VERSION,
+            HpyCharId.DIS_MANUFACTURER_NAME,
+            HpyCharId.DIS_MODEL_NUMBER,
+        ).filter { it in availableChars }.toMutableList()
+
+        if (disChars.isEmpty()) {
+            log("ERROR: No DIS characteristics found")
+            emitEvent(HpyEvent.Error(connId, HpyErrorCode.CONNECT_FAIL, "DIS service missing"))
+            shim.disconnect(connId)
+            transition(HpyConnectionState.DISCONNECTED)
+            return
+        }
+
+        // Send first read, queue the rest — each onCharacteristicRead sends the next
+        val first = disChars.removeFirst()
+        pendingDisReads.clear()
+        pendingDisReads.addAll(disChars)
+        shim.readCharacteristic(connId, first)
+    }
+
+    private fun onAllDisReadsComplete() {
+        deviceInfo = DeviceInfoData(
+            serialNumber = disSerialNumber,
+            manufacturerName = disManufacturerName,
+            fwVersion = disFwVersion,
+            swVersion = disSwVersion,
+            modelNumber = disModelNumber,
+        )
+        firmwareTier = deviceInfo.firmwareTier
+        log("Device info: serial=${deviceInfo.serialNumber}, fw=${deviceInfo.fwVersion}, tier=$firmwareTier")
+        emitEvent(HpyEvent.DeviceInfo(connId, deviceInfo))
+
+        if (firmwareTier == FirmwareTier.TIER_0) {
+            transition(HpyConnectionState.CONNECTED_LIMITED)
+            return
+        }
+
+        // Start handshake
+        transition(HpyConnectionState.HANDSHAKING)
+        handshakeRunner = HandshakeRunner(firmwareTier, config, timeSource)
+        val firstCmd = handshakeRunner!!.start()
+        if (firstCmd != null) {
+            commandQueue.enqueue(firstCmd)
+        } else {
+            onHandshakeComplete()
+        }
+    }
+
+    private fun handleCommandResponse(value: ByteArray) {
+        if (value.isEmpty()) return
+        val cmdByte = value[0]
+        log("CMD response [${value.size}b]: ${value.toHex()}")
+
+        // Check for unrecognized command
+        if (cmdByte == CommandId.UNRECOGNIZED_RESPONSE) {
+            emitEvent(HpyEvent.Error(connId, HpyErrorCode.COMMAND_UNRECOGNIZED, "Unrecognized command"))
+            commandQueue.signalDone()
+            return
+        }
+
+        // If in handshake, route to handshake runner
+        if (state == HpyConnectionState.HANDSHAKING) {
+            handleHandshakeResponse(cmdByte, value)
+            return
+        }
+
+        // In READY state, handle normally
+        commandQueue.signalDone()
+
+        when (cmdByte) {
+            CommandId.GET_DEVICE_STATUS -> {
+                val status = ResponseParser.parseDeviceStatus(value)
+                if (status != null) {
+                    lastStatus = status
+                    emitEvent(HpyEvent.DeviceStatus(connId, status))
+                }
+            }
+            CommandId.GET_DAQ_CONFIG -> {
+                val config = ResponseParser.parseDaqConfig(value)
+                if (config != null) {
+                    emitEvent(HpyEvent.DaqConfig(connId, config))
+                }
+            }
+            else -> {
+                emitEvent(HpyEvent.CommandResult(connId, cmdByte, value.copyOf()))
+            }
+        }
+    }
+
+    private fun handleHandshakeResponse(cmdByte: Byte, value: ByteArray) {
+        val runner = handshakeRunner ?: return
+        commandQueue.signalDone()
+
+        when (cmdByte) {
+            CommandId.GET_DAQ_CONFIG -> {
+                val config = ResponseParser.parseDaqConfig(value)
+                if (config != null) {
+                    log("HS: DAQ config version=${config.version}, mode=${config.modeString}")
+                    emitEvent(HpyEvent.DaqConfig(connId, config))
+                }
+                val next = runner.onCommandComplete()
+                enqueueHandshakeCommand(next)
+            }
+            CommandId.GET_DEVICE_STATUS -> {
+                val status = ResponseParser.parseDeviceStatus(value)
+                if (status != null) {
+                    lastStatus = status
+                    log("HS: DevStatus phy=${status.phyString}, DAQ=${status.daqString}, SOC=${status.soc}%, unsynced=${status.unsyncedFrames}, sendUtc=0x${status.sendUtcFlags.toString(16)}")
+                    emitEvent(HpyEvent.DeviceStatus(connId, status))
+                    val next = runner.onDeviceStatusReceived(status)
+                    enqueueHandshakeCommand(next)
+                } else {
+                    log("HS: DeviceStatus parse failed")
+                    val next = runner.onCommandComplete()
+                    enqueueHandshakeCommand(next)
+                }
+            }
+            CommandId.SET_UTC -> {
+                val resp = ResponseParser.parseSetUtcResponse(value)
+                log("HS: SET_UTC response reboots=${resp?.ringReboots}")
+                val next = runner.onCommandComplete()
+                enqueueHandshakeCommand(next)
+            }
+            CommandId.SET_INFO -> {
+                log("HS: SET_INFO response")
+                val next = runner.onCommandComplete()
+                enqueueHandshakeCommand(next)
+            }
+            CommandId.SET_FINGER_DETECTION -> {
+                log("HS: SET_FINGER_DETECTION response")
+                val next = runner.onCommandComplete()
+                enqueueHandshakeCommand(next)
+            }
+            else -> {
+                log("HS: Unexpected response 0x${cmdByte.toUByte().toString(16)}")
+                val next = runner.onCommandComplete()
+                enqueueHandshakeCommand(next)
+            }
+        }
+    }
+
+    private fun enqueueHandshakeCommand(cmd: QueuedCommand?) {
+        if (cmd != null) {
+            commandQueue.enqueue(cmd)
+        } else if (handshakeRunner?.isComplete == true) {
+            onHandshakeComplete()
+        }
+    }
+
+    private fun onHandshakeComplete() {
+        handshakeRunner = null
+        log("Handshake complete -> READY")
+        transition(HpyConnectionState.READY)
+    }
+
+    private fun handleFrameTxNotification(value: ByteArray) {
+        // In READY state, Frame TX carries autonomous device status notifications
+        if (state == HpyConnectionState.READY || state == HpyConnectionState.HANDSHAKING) {
+            val status = ResponseParser.parseDeviceStatus(value)
+            if (status != null) {
+                lastStatus = status
+                emitEvent(HpyEvent.DeviceStatus(connId, status))
+            }
+        }
+        // In DOWNLOADING state, this would be GATT frame data (future)
+    }
+
+    private fun sendCommand(cmd: QueuedCommand) {
+        log("TX ${cmd.tag} [${cmd.data.size}b]")
+        shim.writeCharacteristic(connId, cmd.charId, cmd.data, WriteType.WITHOUT_RESPONSE)
+        commandQueue.startTimeoutTimer(scope)
+    }
+
+    private fun transition(newState: HpyConnectionState) {
+        if (state == newState) return
+        val oldState = state
+        state = newState
+        log("State: $oldState -> $newState")
+        emitEvent(HpyEvent.StateChanged(connId, newState))
+    }
+
+    private fun log(msg: String) {
+        emitEvent(HpyEvent.Log(connId, msg))
+    }
+}

@@ -1,5 +1,7 @@
 package com.happyhealth.bleplatform.api
 
+import kotlin.jvm.JvmInline
+
 @JvmInline
 value class ConnectionId(val value: Int) {
     init {

@@ -12,6 +12,7 @@ class MemfaultBuffer(private val bufferSize: Int = 131072) {
     private val buffer = ByteArray(bufferSize)
     private var writeOffset = 0
     private val chunks = mutableListOf<MemfaultChunkDescriptor>()
+    private val uploadedChunks = mutableSetOf<MemfaultChunkDescriptor>()
     private var connectSeq: UShort = 0u
 
     fun incrementConnectSeq() {
@@ -26,12 +27,15 @@ class MemfaultBuffer(private val bufferSize: Int = 131072) {
         val newStart = writeOffset
         val newEnd = newStart + data.size
         chunks.removeAll { chunk ->
-            rangesOverlap(newStart, newEnd, chunk.offset, chunk.offset + chunk.length)
+            val overlaps = rangesOverlap(newStart, newEnd, chunk.offset, chunk.offset + chunk.length)
+            if (overlaps) uploadedChunks.remove(chunk)
+            overlaps
         }
 
         // Evict oldest chunks if we exceed the max descriptor count
         while (chunks.size >= 16) {
-            chunks.removeAt(0)
+            val evicted = chunks.removeAt(0)
+            uploadedChunks.remove(evicted)
         }
 
         // Copy data with wrap-around
@@ -58,6 +62,13 @@ class MemfaultBuffer(private val bufferSize: Int = 131072) {
     fun canFitChunk(length: Int): Boolean = length <= bufferSize
 
     fun getChunks(): List<MemfaultChunkDescriptor> = chunks.toList()
+
+    fun getUnuploadedChunks(): List<MemfaultChunkDescriptor> =
+        chunks.filter { it !in uploadedChunks }
+
+    fun markUploaded(descriptors: List<MemfaultChunkDescriptor>) {
+        uploadedChunks.addAll(descriptors)
+    }
 
     fun readChunkData(chunk: MemfaultChunkDescriptor): ByteArray {
         val result = ByteArray(chunk.length)

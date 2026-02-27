@@ -13,6 +13,7 @@ import com.happyhealth.bleplatform.internal.download.DownloadController
 import com.happyhealth.bleplatform.internal.fwupdate.FwUpdateAction
 import com.happyhealth.bleplatform.internal.fwupdate.FwUpdateController
 import com.happyhealth.bleplatform.internal.memfault.MemfaultBuffer
+import com.happyhealth.bleplatform.internal.memfault.MemfaultChunkDescriptor
 import com.happyhealth.bleplatform.internal.model.DeviceInfoData
 import com.happyhealth.bleplatform.internal.model.DeviceStatusData
 import com.happyhealth.bleplatform.internal.model.FirmwareTier
@@ -748,6 +749,23 @@ class ConnectionSlot(
             commandQueue.enqueue(cmd)
         } else if (handshakeRunner?.isComplete == true) {
             onHandshakeComplete()
+        }
+    }
+
+    // Snapshot of descriptors returned by the last getMemfaultChunks() call,
+    // so markMemfaultChunksUploaded() marks exactly those (not any that arrived since).
+    private var lastReturnedChunkDescriptors: List<MemfaultChunkDescriptor> = emptyList()
+
+    fun getMemfaultChunks(): List<ByteArray> {
+        val unuploaded = memfaultBuffer.getUnuploadedChunks()
+        lastReturnedChunkDescriptors = unuploaded
+        return unuploaded.map { memfaultBuffer.readChunkData(it) }
+    }
+
+    fun markMemfaultChunksUploaded() {
+        if (lastReturnedChunkDescriptors.isNotEmpty()) {
+            memfaultBuffer.markUploaded(lastReturnedChunkDescriptors)
+            lastReturnedChunkDescriptors = emptyList()
         }
     }
 

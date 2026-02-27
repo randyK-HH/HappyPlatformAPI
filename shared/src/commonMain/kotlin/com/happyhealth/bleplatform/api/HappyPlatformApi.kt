@@ -110,6 +110,17 @@ class HappyPlatformApi internal constructor(
         return HpyResult.Ok
     }
 
+    // ---- Memfault Chunks ----
+
+    fun getMemfaultChunks(connId: ConnectionId): List<ByteArray> {
+        val slot = manager.getSlot(connId) ?: return emptyList()
+        return slot.getMemfaultChunks()
+    }
+
+    fun markMemfaultChunksUploaded(connId: ConnectionId) {
+        manager.getSlot(connId)?.markMemfaultChunksUploaded()
+    }
+
     fun getActiveConnections(): List<ConnectionId> {
         return manager.getActiveConnections().map { it.connId }
     }

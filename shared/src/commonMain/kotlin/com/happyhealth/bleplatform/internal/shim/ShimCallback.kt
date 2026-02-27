@@ -5,7 +5,8 @@ import com.happyhealth.bleplatform.internal.model.HpyCharId
 
 interface ShimCallback {
 
-    fun onDeviceDiscovered(deviceHandle: Any, name: String, address: String, rssi: Int)
+    fun onDeviceDiscovered(deviceHandle: Any, name: String, address: String, rssi: Int,
+                           manufacturerData: ByteArray? = null)
 
     fun onConnected(connId: ConnectionId)
 

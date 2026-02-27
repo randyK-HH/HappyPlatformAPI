@@ -86,10 +86,19 @@ class ConnectionManager(
 
     // ---- ShimCallback implementation ----
 
-    override fun onDeviceDiscovered(deviceHandle: Any, name: String, address: String, rssi: Int) {
+    override fun onDeviceDiscovered(deviceHandle: Any, name: String, address: String, rssi: Int,
+                                    manufacturerData: ByteArray?) {
+        // Parse ring color and size from manufacturer-specific data.
+        // Format (after company ID): [formatVersion][color][size]
+        var ringSize = 0
+        var ringColor = 0
+        if (manufacturerData != null && manufacturerData.size >= 3) {
+            ringColor = manufacturerData[1].toInt() and 0xFF
+            ringSize = manufacturerData[2].toInt() and 0xFF
+        }
         val existing = _discoveredDevices.value.toMutableList()
         val idx = existing.indexOfFirst { it.address == address }
-        val info = ScannedDeviceInfo(deviceHandle, name, address, rssi)
+        val info = ScannedDeviceInfo(deviceHandle, name, address, rssi, ringSize, ringColor)
         if (idx >= 0) existing[idx] = info else existing.add(info)
         _discoveredDevices.value = existing
         events.tryEmit(HpyEvent.DeviceDiscovered(name, address, rssi, deviceHandle))

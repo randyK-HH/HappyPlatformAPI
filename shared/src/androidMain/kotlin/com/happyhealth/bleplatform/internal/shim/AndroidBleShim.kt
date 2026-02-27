@@ -65,12 +65,20 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
         scanner = null
     }
 
+    private fun extractManufacturerData(result: ScanResult): ByteArray? {
+        val mfgData = result.scanRecord?.manufacturerSpecificData ?: return null
+        if (mfgData.size() == 0) return null
+        // Take the first entry — data bytes after the 2-byte company ID
+        return mfgData.valueAt(0)
+    }
+
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
             val name = result.scanRecord?.deviceName ?: device.name ?: return
+            val mfgData = extractManufacturerData(result)
             Log.d(TAG, "Scan found: $name (${device.address}) rssi=${result.rssi}")
-            callback?.onDeviceDiscovered(device, name, device.address, result.rssi)
+            callback?.onDeviceDiscovered(device, name, device.address, result.rssi, mfgData)
         }
 
         override fun onBatchScanResults(results: MutableList<ScanResult>) {
@@ -78,8 +86,9 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
             for (result in results) {
                 val device = result.device
                 val name = result.scanRecord?.deviceName ?: device.name ?: continue
+                val mfgData = extractManufacturerData(result)
                 Log.d(TAG, "  Batch: $name (${device.address}) rssi=${result.rssi}")
-                callback?.onDeviceDiscovered(device, name, device.address, result.rssi)
+                callback?.onDeviceDiscovered(device, name, device.address, result.rssi, mfgData)
             }
         }
 

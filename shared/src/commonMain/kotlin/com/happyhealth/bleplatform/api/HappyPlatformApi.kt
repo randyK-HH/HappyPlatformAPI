@@ -1,7 +1,7 @@
 package com.happyhealth.bleplatform.api
 
 import com.happyhealth.bleplatform.internal.command.CommandBuilder
-import com.happyhealth.bleplatform.internal.command.CommandId
+import com.happyhealth.bleplatform.internal.model.DaqConfigData
 import com.happyhealth.bleplatform.internal.connection.CompletionType
 import com.happyhealth.bleplatform.internal.connection.ConnectionConfig
 import com.happyhealth.bleplatform.internal.connection.QueuedCommand
@@ -57,6 +57,10 @@ class HappyPlatformApi internal constructor(
 
     fun getDaqConfig(connId: ConnectionId): HpyResult {
         return enqueueHcsCommand(connId, "GET_DAQ_CONFIG", CommandBuilder.buildGetDaqConfig(), FirmwareTier.TIER_2)
+    }
+
+    fun setDaqConfig(connId: ConnectionId, config: DaqConfigData, applyImmediately: Boolean): HpyResult {
+        return enqueueHcsCommand(connId, "SET_DAQ_CONFIG", CommandBuilder.buildSetDaqConfig(config, applyImmediately), FirmwareTier.TIER_2)
     }
 
     fun identify(connId: ConnectionId): HpyResult {

@@ -8,6 +8,7 @@ object CommandId {
     const val SET_UTC: Byte = 0x0B
     const val GET_FRAMES: Byte = 0x17
     const val GET_DEVICE_STATUS: Byte = 0x1E.toByte()
+    const val SET_DAQ_CONFIG: Byte = 0x2A
     const val GET_DAQ_CONFIG: Byte = 0x2B
     const val SET_FINGER_DETECTION: Byte = 0x2D
     const val SET_INFO: Byte = 0x32

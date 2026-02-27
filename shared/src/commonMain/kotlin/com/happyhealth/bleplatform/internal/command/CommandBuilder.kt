@@ -1,5 +1,7 @@
 package com.happyhealth.bleplatform.internal.command
 
+import com.happyhealth.bleplatform.internal.model.DaqConfigData
+
 object CommandBuilder {
 
     fun buildGetDeviceStatus(): ByteArray =
@@ -10,6 +12,48 @@ object CommandBuilder {
 
     fun buildGetDaqConfig(): ByteArray =
         byteArrayOf(CommandId.GET_DAQ_CONFIG)
+
+    fun buildSetDaqConfig(config: DaqConfigData, applyImmediately: Boolean): ByteArray {
+        val cmd = ByteArray(66)
+        cmd[0] = CommandId.SET_DAQ_CONFIG
+        cmd[1] = if (applyImmediately) 0x01 else 0x00
+        // Bytes [2..64] = 63-byte config struct (same layout as GET response bytes 1-63)
+        cmd[2] = config.version.toByte()
+        cmd[3] = config.mode.toByte()
+        cmd[4] = if (config.ambientLightEn) 0x01 else 0x00
+        writeUInt32(cmd, 5, config.ambientLightPeriodMs)
+        cmd[9] = if (config.ambientTempEn) 0x01 else 0x00
+        writeUInt32(cmd, 10, config.ambientTempPeriodMs)
+        cmd[14] = if (config.skinTempEn) 0x01 else 0x00
+        writeUInt32(cmd, 15, config.skinTempPeriodMs)
+        writeUInt32(cmd, 19, config.ppgCycleTimeMs)
+        writeUInt32(cmd, 23, config.ppgIntervalTimeMs)
+        cmd[27] = if (config.ppgOnDuringSleepEn) 0x01 else 0x00
+        cmd[28] = if (config.compressedSensingEn) 0x01 else 0x00
+        cmd[29] = if (config.multiSpectralEn) 0x01 else 0x00
+        writeUInt32(cmd, 30, config.multiSpectralPeriodMs)
+        writeUInt32(cmd, 34, config.sfMaxLatencyMs)
+        cmd[38] = config.ppgFsr.toByte()
+        cmd[39] = if (config.edaSweepEn) 0x01 else 0x00
+        writeUInt32(cmd, 40, config.edaSweepPeriodMs)
+        cmd[44] = config.accUlpEn.toByte()
+        cmd[45] = if (config.oppSampleEn) 0x01 else 0x00
+        writeUInt32(cmd, 46, config.oppSamplePeriodMs)
+        cmd[50] = config.oppSampleAltMode.toByte()
+        cmd[51] = config.memfaultConfig.toByte()
+        writeUInt32(cmd, 52, config.oppSampleOnTimeMs)
+        cmd[56] = if (config.acc2gDuringSleepEn) 0x01 else 0x00
+        cmd[57] = config.accInactivityConfig.toByte()
+        cmd[58] = config.ppgStopConfig.toByte()
+        cmd[59] = config.ppgAgcChannelConfig.toByte()
+        cmd[60] = config.sleepThreshConfig.toByte()
+        cmd[61] = config.csMode.toByte()
+        cmd[62] = config.resetRingCfg.toByte()
+        cmd[63] = config.edaSweepParamCfg.toByte()
+        cmd[64] = config.dailyDaqModeCfg.toByte()
+        cmd[65] = 0x00 // reserved
+        return cmd
+    }
 
     fun buildStartDaq(): ByteArray =
         byteArrayOf(CommandId.START_DAQ, 0x00, 0x00, 0x00, 0x00)

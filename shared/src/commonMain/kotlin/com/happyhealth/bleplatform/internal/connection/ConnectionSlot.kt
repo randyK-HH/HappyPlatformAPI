@@ -10,6 +10,8 @@ import com.happyhealth.bleplatform.internal.command.ResponseParser
 import com.happyhealth.bleplatform.internal.command.toHex
 import com.happyhealth.bleplatform.internal.download.DownloadAction
 import com.happyhealth.bleplatform.internal.download.DownloadController
+import com.happyhealth.bleplatform.internal.fwupdate.FwUpdateAction
+import com.happyhealth.bleplatform.internal.fwupdate.FwUpdateController
 import com.happyhealth.bleplatform.internal.memfault.MemfaultBuffer
 import com.happyhealth.bleplatform.internal.model.DeviceInfoData
 import com.happyhealth.bleplatform.internal.model.DeviceStatusData
@@ -21,7 +23,13 @@ import com.happyhealth.bleplatform.internal.shim.WriteType
 import com.happyhealth.bleplatform.internal.util.CRC_INIT
 import com.happyhealth.bleplatform.internal.util.finalizeCrc
 import com.happyhealth.bleplatform.internal.util.updateCrc
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 class ConnectionSlot(
     val connId: ConnectionId,
@@ -48,12 +56,30 @@ class ConnectionSlot(
     private var downloadEnabled: Boolean = false
     private var downloadPendingStatusPoll: Boolean = false
 
+    // FW update
+    private var fwUpdateController: FwUpdateController? = null
+    private var fwUpdateJob: Job? = null
+    private var fwErrorPendingDisconnect: Boolean = false
+    private var fwErrorFallbackJob: Job? = null
+
+    // Reconnection
+    private var reconnectJob: Job? = null
+    private var reconnectAttempt: Int = 0
+    private var isUserDisconnect: Boolean = false
+    private var wasFwUpdateRebooting: Boolean = false
+    private var connectResultDeferred: CompletableDeferred<Boolean>? = null
+    private var resumeDownloadAfterReconnect: Boolean = false
+
     // Persists across reconnections — NOT cleared on disconnect
     private val memfaultBuffer = MemfaultBuffer()
 
     // Transient per-drain accumulator for memfault STREAM_TX data
     private var memfaultAccumulator: ByteArray? = null
     private var memfaultAccumulatorPos: Int = 0
+
+    // Guard against duplicate Android BLE callbacks (onConnectionStateChange/onMtuChanged can fire twice)
+    private var connectHandled: Boolean = false
+    private var serviceDiscoveryStarted: Boolean = false
 
     // Serialized GATT operation queues (Android allows only one outstanding op at a time)
     private val pendingNotifSubscriptions = mutableListOf<HpyCharId>()
@@ -79,21 +105,24 @@ class ConnectionSlot(
     fun connect(handle: Any) {
         if (state != HpyConnectionState.IDLE && state != HpyConnectionState.DISCONNECTED) return
         deviceHandle = handle
+        isUserDisconnect = false
+        connectHandled = false
         transition(HpyConnectionState.CONNECTING)
         shim.connect(connId, handle)
     }
 
     fun disconnect() {
-        commandQueue.flush()
-        handshakeRunner = null
-        if (downloadController != null) {
-            shim.l2capClose(connId)
-            downloadController = null
-        }
-        downloadEnabled = false
-        downloadPendingStatusPoll = false
-        memfaultAccumulator = null
-        memfaultAccumulatorPos = 0
+        isUserDisconnect = true
+        resumeDownloadAfterReconnect = false
+        fwErrorPendingDisconnect = false
+        fwErrorFallbackJob?.cancel()
+        fwErrorFallbackJob = null
+        reconnectJob?.cancel()
+        reconnectJob = null
+        reconnectAttempt = 0
+        connectResultDeferred?.complete(false)
+        connectResultDeferred = null
+        cleanupOperations()
         shim.disconnect(connId)
         transition(HpyConnectionState.DISCONNECTED)
     }
@@ -118,6 +147,7 @@ class ConnectionSlot(
     fun stopDownload() {
         downloadEnabled = false
         downloadPendingStatusPoll = false
+        resumeDownloadAfterReconnect = false
         if (state == HpyConnectionState.DOWNLOADING) {
             downloadController?.let { shim.l2capClose(connId) }
             downloadController = null
@@ -130,34 +160,182 @@ class ConnectionSlot(
         }
     }
 
+    // ---- FW Update ----
+
+    fun startFwUpdate(imageBytes: ByteArray) {
+        if (state != HpyConnectionState.READY) return
+        val controller = FwUpdateController(connId, imageBytes)
+        fwUpdateController = controller
+        transition(HpyConnectionState.FW_UPDATING)
+        handleFwUpdateAction(controller.start())
+    }
+
+    fun cancelFwUpdate() {
+        val controller = fwUpdateController ?: return
+        fwUpdateJob?.cancel()
+        fwUpdateJob = null
+        handleFwUpdateAction(controller.cancel())
+        fwUpdateController = null
+        log("FW update cancelled — awaiting disconnect")
+        // Abort triggers a ring reboot; don't show READY while ring is offline.
+        fwErrorPendingDisconnect = true
+        fwErrorFallbackJob = scope.launch {
+            delay(5_000L)
+            if (fwErrorPendingDisconnect) {
+                fwErrorPendingDisconnect = false
+                log("Ring still connected after FW cancel — returning to READY")
+                transition(HpyConnectionState.READY)
+            }
+        }
+    }
+
+    fun onL2capSendProgress(blocksSent: Int, blocksTotal: Int) {
+        handleFwUpdateAction(fwUpdateController?.onStreamProgress(blocksSent, blocksTotal) ?: return)
+    }
+
+    fun onL2capSendComplete() {
+        handleFwUpdateAction(fwUpdateController?.onStreamComplete() ?: return)
+    }
+
+    fun onL2capSendError(message: String) {
+        handleFwUpdateAction(fwUpdateController?.onStreamError(message) ?: return)
+    }
+
+    private fun handleFwUpdateAction(action: FwUpdateAction) {
+        when (action) {
+            is FwUpdateAction.WriteSuota -> {
+                log("FW TX ${action.charId}")
+                shim.writeCharacteristic(connId, action.charId, action.data, WriteType.WITH_RESPONSE)
+            }
+            is FwUpdateAction.StartL2capStream -> {
+                shim.l2capStreamSend(connId, action.psm, action.imageBytes,
+                    action.blockSize, action.delayMs)
+            }
+            is FwUpdateAction.EmitEvent -> {
+                emitEvent(action.event)
+                // If the controller entered ERROR state, clean up but DON'T go to READY yet —
+                // the ring is likely rebooting and a BLE disconnect will arrive shortly.
+                // If no disconnect arrives within 5s, fall back to READY.
+                if (fwUpdateController?.currentState == FwUpdateController.State.ERROR) {
+                    fwUpdateController = null
+                    fwUpdateJob?.cancel()
+                    fwUpdateJob = null
+                    fwErrorPendingDisconnect = true
+                    log("FW update error — awaiting disconnect")
+                    fwErrorFallbackJob = scope.launch {
+                        delay(5_000L)
+                        if (fwErrorPendingDisconnect) {
+                            fwErrorPendingDisconnect = false
+                            log("Ring still connected after FW error — returning to READY")
+                            transition(HpyConnectionState.READY)
+                        }
+                    }
+                }
+            }
+            is FwUpdateAction.ScheduleCallback -> {
+                fwUpdateJob = scope.launch {
+                    delay(action.delayMs)
+                    val next = fwUpdateController?.onScheduledCallback(action.tag) ?: return@launch
+                    handleFwUpdateAction(next)
+                }
+            }
+            is FwUpdateAction.SessionComplete -> {
+                fwUpdateController = null
+                fwUpdateJob = null
+                wasFwUpdateRebooting = true
+                log("FW update complete — releasing GATT for ring reboot")
+                transition(HpyConnectionState.FW_UPDATE_REBOOTING)
+                // Close the GATT so the ring can reboot cleanly.
+                // gatt.close() does NOT fire onDisconnected, so start reconnection explicitly.
+                shim.disconnect(connId)
+                if (reconnectJob == null) {
+                    startFwRebootReconnection()
+                }
+            }
+            is FwUpdateAction.NoOp -> {}
+            is FwUpdateAction.Multiple -> action.actions.forEach { handleFwUpdateAction(it) }
+        }
+    }
+
     // ---- Shim callbacks ----
 
     fun onConnected() {
+        if (connectHandled) return
+        connectHandled = true
+        connectResultDeferred?.complete(true)
+        connectResultDeferred = null
+        serviceDiscoveryStarted = false
         log("Connected")
         shim.requestMtu(connId, config.requestedMtu)
     }
 
     fun onMtuChanged(mtu: Int) {
+        if (serviceDiscoveryStarted) return
+        serviceDiscoveryStarted = true
         log("MTU negotiated: $mtu")
         shim.discoverServices(connId)
     }
 
     fun onDisconnected(status: Int) {
         log("Disconnected (status=$status)")
-        commandQueue.flush()
-        handshakeRunner = null
-        if (downloadController != null) {
-            shim.l2capClose(connId)
-            downloadController = null
+
+        // Cancel FW error fallback timer — the disconnect we were waiting for has arrived
+        fwErrorFallbackJob?.cancel()
+        fwErrorFallbackJob = null
+        val hadFwError = fwErrorPendingDisconnect
+        fwErrorPendingDisconnect = false
+
+        // Capture download state before cleanup destroys it
+        val wasDownloading = downloadEnabled
+        val interruptedBatchFrames = downloadController?.batchFramesReceived ?: 0
+
+        cleanupOperations()
+
+        // 1. If a reconnect connect attempt just failed, signal failure — retry loop handles it
+        val deferred = connectResultDeferred
+        if (deferred != null) {
+            deferred.complete(false)
+            connectResultDeferred = null
+            return
         }
-        downloadEnabled = false
-        downloadPendingStatusPoll = false
-        memfaultAccumulator = null
-        memfaultAccumulatorPos = 0
-        if (state != HpyConnectionState.DISCONNECTED) {
-            // Unexpected disconnect
-            transition(HpyConnectionState.DISCONNECTED)
+
+        // 2. User-initiated disconnect — go straight to DISCONNECTED
+        if (isUserDisconnect) {
+            if (state != HpyConnectionState.DISCONNECTED) {
+                transition(HpyConnectionState.DISCONNECTED)
+            }
+            return
         }
+
+        // 3. FW update reboot — start FW reboot reconnection
+        //    Also detect early reboot: ring may reboot before SessionComplete fires,
+        //    so check state (FW_UPDATING or FW_UPDATE_REBOOTING) as well as the flag.
+        //    Skip if we just had a FW error (CRC_ERR etc.) — use normal reconnection instead.
+        val isFwRebootDisconnect = !hadFwError && (wasFwUpdateRebooting ||
+            state == HpyConnectionState.FW_UPDATING ||
+            state == HpyConnectionState.FW_UPDATE_REBOOTING)
+        if (isFwRebootDisconnect && reconnectJob == null) {
+            wasFwUpdateRebooting = true  // ensure flag is set for onHandshakeComplete
+            startFwRebootReconnection()
+            return
+        }
+
+        // 4. Already reconnecting with active job — let the loop handle it
+        if ((state == HpyConnectionState.RECONNECTING || state == HpyConnectionState.FW_UPDATE_REBOOTING)
+            && reconnectJob != null
+        ) {
+            return
+        }
+
+        // 5. Unexpected disconnect — start normal reconnection
+        if (wasDownloading) {
+            resumeDownloadAfterReconnect = true
+            if (interruptedBatchFrames > 0) {
+                log("Download interrupted: $interruptedBatchFrames partial-batch frames to discard")
+                emitEvent(HpyEvent.DownloadInterrupted(connId, interruptedBatchFrames))
+            }
+        }
+        startNormalReconnection()
     }
 
     fun onServicesDiscovered(chars: Set<HpyCharId>) {
@@ -213,7 +391,13 @@ class ConnectionSlot(
             HpyCharId.DEBUG_TX -> emitEvent(HpyEvent.DebugMessage(connId, value.copyOf()))
             HpyCharId.FRAME_TX -> handleFrameTxNotification(value)
             HpyCharId.STREAM_TX -> handleStreamTxNotification(value)
-            HpyCharId.SUOTA_STATUS -> { /* Handled by FW update controller */ }
+            HpyCharId.SUOTA_STATUS -> {
+                val controller = fwUpdateController ?: return
+                if (value.isEmpty()) return
+                val statusCode = value[0].toUByte().toInt()
+                log("SUOTA_STATUS: $statusCode")
+                handleFwUpdateAction(controller.onSuotaStatus(statusCode))
+            }
             else -> {}
         }
     }
@@ -226,7 +410,110 @@ class ConnectionSlot(
         // ON_NOTIFICATION commands wait for the notification response
     }
 
+    // ---- Reconnection ----
+
+    private fun startNormalReconnection() {
+        val handle = deviceHandle ?: run {
+            log("Cannot reconnect — no device handle")
+            transition(HpyConnectionState.DISCONNECTED)
+            return
+        }
+        reconnectAttempt = 0
+        transition(HpyConnectionState.RECONNECTING)
+        reconnectJob = scope.launch {
+            for (attempt in 1..config.reconnectMaxAttempts) {
+                reconnectAttempt = attempt
+                val delayMs = config.reconnectSchedule.delayForAttempt(attempt)
+                delay(delayMs)
+                transition(HpyConnectionState.RECONNECTING, retryCount = attempt)
+                log("Reconnect attempt $attempt/${config.reconnectMaxAttempts}")
+                connectHandled = false
+                shim.connect(connId, handle)
+                val connected = waitForConnectResult()
+                if (connected) {
+                    // onConnected() has already been called — handshake flow takes over
+                    reconnectJob = null
+                    reconnectAttempt = 0
+                    return@launch
+                }
+            }
+            // All attempts exhausted
+            log("Reconnection failed after ${config.reconnectMaxAttempts} attempts")
+            emitEvent(HpyEvent.Error(connId, HpyErrorCode.RECONNECT_FAIL,
+                "Reconnection failed after ${config.reconnectMaxAttempts} attempts"))
+            reconnectJob = null
+            reconnectAttempt = 0
+            transition(HpyConnectionState.DISCONNECTED)
+        }
+    }
+
+    private fun startFwRebootReconnection() {
+        val handle = deviceHandle ?: run {
+            log("Cannot reconnect after FW update — no device handle")
+            wasFwUpdateRebooting = false
+            transition(HpyConnectionState.DISCONNECTED)
+            return
+        }
+        reconnectAttempt = 0
+        reconnectJob = scope.launch {
+            log("Waiting ${config.fwRebootWaitMs}ms for ring to reboot...")
+            delay(config.fwRebootWaitMs)
+            for (attempt in 1..config.reconnectMaxAttempts) {
+                reconnectAttempt = attempt
+                val delayMs = config.fwReconnectSchedule.delayForAttempt(attempt)
+                delay(delayMs)
+                transition(HpyConnectionState.FW_UPDATE_REBOOTING, retryCount = attempt)
+                log("FW reboot reconnect attempt $attempt/${config.reconnectMaxAttempts}")
+                connectHandled = false
+                shim.connect(connId, handle)
+                val connected = waitForConnectResult()
+                if (connected) {
+                    // onConnected() has already been called — handshake flow takes over
+                    reconnectJob = null
+                    reconnectAttempt = 0
+                    return@launch
+                }
+            }
+            // All attempts exhausted
+            log("FW update reconnection failed after ${config.reconnectMaxAttempts} attempts")
+            emitEvent(HpyEvent.Error(connId, HpyErrorCode.FW_UPDATE_RECONNECT_FAIL,
+                "FW update reconnection failed after ${config.reconnectMaxAttempts} attempts"))
+            wasFwUpdateRebooting = false
+            reconnectJob = null
+            reconnectAttempt = 0
+            transition(HpyConnectionState.DISCONNECTED)
+        }
+    }
+
+    private suspend fun waitForConnectResult(): Boolean {
+        val deferred = CompletableDeferred<Boolean>()
+        connectResultDeferred = deferred
+        return try {
+            withTimeout(15_000L) { deferred.await() }
+        } catch (_: TimeoutCancellationException) {
+            connectResultDeferred = null
+            shim.disconnect(connId)  // cancel the pending BLE connect
+            false
+        }
+    }
+
     // ---- Internal ----
+
+    private fun cleanupOperations() {
+        commandQueue.flush()
+        handshakeRunner = null
+        if (downloadController != null) {
+            shim.l2capClose(connId)
+            downloadController = null
+        }
+        downloadEnabled = false
+        downloadPendingStatusPoll = false
+        fwUpdateController = null
+        fwUpdateJob?.cancel()
+        fwUpdateJob = null
+        memfaultAccumulator = null
+        memfaultAccumulatorPos = 0
+    }
 
     private fun subscribeNotifications() {
         // Build list of chars to subscribe — send first one, queue the rest
@@ -473,8 +760,20 @@ class ConnectionSlot(
             log("Memfault drain complete: $chunksThisDrain new chunks, ${memfaultBuffer.getChunks().size} total in buffer")
             emitEvent(HpyEvent.MemfaultComplete(connId, chunksThisDrain))
         }
-        log("Handshake complete -> READY")
-        transition(HpyConnectionState.READY)
+        if (wasFwUpdateRebooting) {
+            wasFwUpdateRebooting = false
+            log("FW update reconnect complete -> READY (FW: ${deviceInfo.fwVersion})")
+            emitEvent(HpyEvent.FwUpdateComplete(connId, deviceInfo.fwVersion))
+            transition(HpyConnectionState.READY)
+        } else {
+            log("Handshake complete -> READY")
+            transition(HpyConnectionState.READY)
+        }
+        if (resumeDownloadAfterReconnect) {
+            resumeDownloadAfterReconnect = false
+            log("Resuming download after reconnection")
+            startDownload()
+        }
     }
 
     private fun handleFrameTxNotification(value: ByteArray) {
@@ -608,12 +907,12 @@ class ConnectionSlot(
         commandQueue.startTimeoutTimer(scope)
     }
 
-    private fun transition(newState: HpyConnectionState) {
-        if (state == newState) return
+    private fun transition(newState: HpyConnectionState, retryCount: Int = 0) {
+        if (state == newState && retryCount == 0) return
         val oldState = state
         state = newState
-        log("State: $oldState -> $newState")
-        emitEvent(HpyEvent.StateChanged(connId, newState))
+        log("State: $oldState -> $newState" + if (retryCount > 0) " (retry $retryCount)" else "")
+        emitEvent(HpyEvent.StateChanged(connId, newState, retryCount))
     }
 
     private fun log(msg: String) {

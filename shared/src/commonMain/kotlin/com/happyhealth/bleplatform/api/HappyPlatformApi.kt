@@ -79,6 +79,21 @@ class HappyPlatformApi internal constructor(
         return enqueueHcsCommand(connId, "SET_FINGER_DET", CommandBuilder.buildSetFingerDetection(enable), FirmwareTier.TIER_2)
     }
 
+    // ---- FW Update ----
+
+    fun startFwUpdate(connId: ConnectionId, imageBytes: ByteArray): HpyResult {
+        val slot = manager.getSlot(connId) ?: return HpyResult.ErrInvalidConnId
+        if (slot.state != HpyConnectionState.READY) return HpyResult.ErrCommandRejected
+        slot.startFwUpdate(imageBytes)
+        return HpyResult.Ok
+    }
+
+    fun cancelFwUpdate(connId: ConnectionId): HpyResult {
+        val slot = manager.getSlot(connId) ?: return HpyResult.ErrInvalidConnId
+        slot.cancelFwUpdate()
+        return HpyResult.Ok
+    }
+
     // ---- Download ----
 
     fun startDownload(connId: ConnectionId): HpyResult {
@@ -118,6 +133,7 @@ class HappyPlatformApi internal constructor(
     ): HpyResult {
         val slot = manager.getSlot(connId) ?: return HpyResult.ErrInvalidConnId
         if (slot.state == HpyConnectionState.DISCONNECTED) return HpyResult.ErrNotConnected
+        if (slot.state == HpyConnectionState.RECONNECTING) return HpyResult.ErrNotConnected
         if (slot.state != HpyConnectionState.READY && slot.state != HpyConnectionState.WAITING) return HpyResult.ErrCommandRejected
         if (slot.firmwareTier < minTier) return HpyResult.ErrFwNotSupported
 

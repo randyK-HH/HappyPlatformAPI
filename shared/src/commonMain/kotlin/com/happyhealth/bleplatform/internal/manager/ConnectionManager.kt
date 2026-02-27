@@ -151,6 +151,18 @@ class ConnectionManager(
         getSlot(connId)?.onL2capError(message)
     }
 
+    override fun onL2capSendProgress(connId: ConnectionId, blocksSent: Int, blocksTotal: Int) {
+        getSlot(connId)?.onL2capSendProgress(blocksSent, blocksTotal)
+    }
+
+    override fun onL2capSendComplete(connId: ConnectionId) {
+        getSlot(connId)?.onL2capSendComplete()
+    }
+
+    override fun onL2capSendError(connId: ConnectionId, message: String) {
+        getSlot(connId)?.onL2capSendError(message)
+    }
+
     fun destroy() {
         scanStop()
         for (i in slots.indices) {

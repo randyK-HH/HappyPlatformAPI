@@ -56,7 +56,8 @@ internal class DownloadController(
     private var totalFramesToDownload: Int = 0
     private var totalFramesDownloaded: Int = 0
     private var batchFramesExpected: Int = 0
-    private var batchFramesReceived: Int = 0
+    var batchFramesReceived: Int = 0
+        private set
     private var batchRetryCount: Int = 0
     private var usingL2cap: Boolean = false
     val transportString: String get() = if (usingL2cap) "L2CAP" else "GATT"

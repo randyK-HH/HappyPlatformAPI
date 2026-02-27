@@ -65,6 +65,7 @@ class MockBleShim : PlatformBleShim {
     override fun l2capOpen(connId: ConnectionId, psm: Int) {}
     override fun l2capStartReceiving(connId: ConnectionId, expectedFrames: Int) {}
     override fun l2capClose(connId: ConnectionId) {}
+    override fun l2capStreamSend(connId: ConnectionId, psm: Int, imageBytes: ByteArray, blockSize: Int, interBlockDelayMs: Long) {}
 
     // ---- Test helpers ----
 

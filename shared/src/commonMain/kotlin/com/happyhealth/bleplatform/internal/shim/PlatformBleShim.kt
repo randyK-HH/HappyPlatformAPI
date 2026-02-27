@@ -31,6 +31,14 @@ interface PlatformBleShim {
     fun l2capOpen(connId: ConnectionId, psm: Int)
     fun l2capStartReceiving(connId: ConnectionId, expectedFrames: Int)
     fun l2capClose(connId: ConnectionId)
+
+    fun l2capStreamSend(
+        connId: ConnectionId,
+        psm: Int,
+        imageBytes: ByteArray,
+        blockSize: Int,
+        interBlockDelayMs: Long,
+    )
 }
 
 enum class WriteType {

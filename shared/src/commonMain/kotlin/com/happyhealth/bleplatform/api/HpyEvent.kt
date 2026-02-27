@@ -85,6 +85,11 @@ sealed class HpyEvent {
         val frameData: ByteArray,
     ) : HpyEvent()
 
+    data class DownloadInterrupted(
+        override val connId: ConnectionId,
+        val framesToDiscard: Int,
+    ) : HpyEvent()
+
     data class DownloadComplete(
         override val connId: ConnectionId,
         val totalFrames: Int,

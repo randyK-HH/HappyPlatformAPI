@@ -293,6 +293,48 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
         Log.d(TAG, "[${connId}] L2CAP closed")
     }
 
+    override fun l2capStreamSend(
+        connId: ConnectionId,
+        psm: Int,
+        imageBytes: ByteArray,
+        blockSize: Int,
+        interBlockDelayMs: Long,
+    ) {
+        l2capJobs[connId.value]?.cancel()
+        l2capJobs[connId.value] = l2capScope.launch {
+            var socket: BluetoothSocket? = null
+            try {
+                val device = deviceMap[connId.value] ?: throw Exception("No device")
+                socket = device.createInsecureL2capChannel(psm)
+                socket.connect()
+                val out = socket.outputStream
+                val totalBlocks = (imageBytes.size + blockSize - 1) / blockSize
+
+                for (i in 0 until totalBlocks) {
+                    if (!isActive) return@launch
+                    val block = ByteArray(blockSize)
+                    val start = i * blockSize
+                    val end = minOf(start + blockSize, imageBytes.size)
+                    imageBytes.copyInto(block, 0, start, end)
+                    out.write(block)
+                    out.flush()
+                    callback?.onL2capSendProgress(connId, i + 1, totalBlocks)
+                    if (i < totalBlocks - 1) delay(interBlockDelayMs)
+                }
+                // Allow BLE stack to drain its transmit buffer before closing the socket
+                delay(500L)
+            } catch (e: Exception) {
+                if (isActive) {
+                    callback?.onL2capSendError(connId, "L2CAP send: ${e.message}")
+                    return@launch
+                }
+            } finally {
+                try { socket?.close() } catch (_: Exception) {}
+            }
+            if (isActive) callback?.onL2capSendComplete(connId)
+        }
+    }
+
     fun getBluetoothDevice(connId: ConnectionId): BluetoothDevice? = deviceMap[connId.value]
 
     // ---- GATT Callback (per connection) ----

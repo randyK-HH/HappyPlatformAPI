@@ -12,7 +12,7 @@ kotlin {
         }
     }
 
-    listOf(iosArm64(), iosSimulatorArm64()).forEach {
+    listOf(iosArm64(), iosSimulatorArm64(), macosArm64(), macosX64()).forEach {
         it.binaries.framework {
             baseName = "HappyPlatformAPI"
             isStatic = true
@@ -32,13 +32,11 @@ kotlin {
             }
         }
         val androidMain by getting
-        val iosArm64Main by getting
-        val iosSimulatorArm64Main by getting
-        val iosMain by creating {
-            dependsOn(commonMain)
-            iosArm64Main.dependsOn(this)
-            iosSimulatorArm64Main.dependsOn(this)
-        }
+        val appleMain by creating { dependsOn(commonMain) }
+        val iosArm64Main by getting { dependsOn(appleMain) }
+        val iosSimulatorArm64Main by getting { dependsOn(appleMain) }
+        val macosArm64Main by getting { dependsOn(appleMain) }
+        val macosX64Main by getting { dependsOn(appleMain) }
     }
 }
 

@@ -822,7 +822,6 @@ class ConnectionSlot(
             value[0] == CommandId.GET_FRAMES
         ) {
             val controller = downloadController ?: return
-            commandQueue.signalDone()
             val action = controller.onCommandResponse(value[0], value)
             handleDownloadAction(action)
             return
@@ -881,7 +880,6 @@ class ConnectionSlot(
             batchSize = config.downloadBatchSize,
             maxRetries = config.downloadMaxRetries,
             supportsL2cap = useL2cap,
-            commandTimeoutMs = config.commandTimeoutMs,
             cumulativeFramesOffset = cumulativeFramesDownloaded,
             cumulativeTotalOffset = cumulativeFramesTotal,
             onFrameEmit = { frameData -> emitEvent(HpyEvent.DownloadFrame(connId, frameData)) },

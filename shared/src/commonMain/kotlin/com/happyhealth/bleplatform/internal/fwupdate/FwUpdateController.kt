@@ -12,6 +12,7 @@ internal sealed class FwUpdateAction {
         val imageBytes: ByteArray,
         val blockSize: Int,
         val delayMs: Long,
+        val drainDelayMs: Long,
     ) : FwUpdateAction()
     data class EmitEvent(val event: HpyEvent) : FwUpdateAction()
     data class ScheduleCallback(val delayMs: Long, val tag: String) : FwUpdateAction()
@@ -23,6 +24,8 @@ internal sealed class FwUpdateAction {
 internal class FwUpdateController(
     private val connId: ConnectionId,
     private val imageBytes: ByteArray,
+    private val streamInterBlockDelayMs: Long = L2CAP_STREAM_DELAY_MS,
+    private val streamDrainDelayMs: Long = L2CAP_STREAM_DRAIN_MS,
 ) {
     enum class State {
         IDLE, FLASH, PATCH_LEN, STREAMING, WAIT_CLOSE, FINALIZE, RESET,
@@ -86,7 +89,8 @@ internal class FwUpdateController(
                 if (state != State.PATCH_LEN) return FwUpdateAction.NoOp
                 state = State.STREAMING
                 FwUpdateAction.StartL2capStream(
-                    L2CAP_SUOTA_PSM, imageBytes, SUOTA_BLOCK_SIZE, L2CAP_STREAM_DELAY_MS,
+                    L2CAP_SUOTA_PSM, imageBytes, SUOTA_BLOCK_SIZE,
+                    streamInterBlockDelayMs, streamDrainDelayMs,
                 )
             }
             "finalize" -> {
@@ -132,6 +136,7 @@ internal class FwUpdateController(
         const val SUOTA_BLOCK_SIZE = 240
         const val L2CAP_SUOTA_PSM = 129
         const val L2CAP_STREAM_DELAY_MS = 30L
+        const val L2CAP_STREAM_DRAIN_MS = 2000L
         const val PATCH_LEN_DELAY_MS = 200L
         const val CLOSE_WAIT_MS = 5000L
 

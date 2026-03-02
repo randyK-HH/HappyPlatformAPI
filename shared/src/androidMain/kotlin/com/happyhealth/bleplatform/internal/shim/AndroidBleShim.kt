@@ -308,6 +308,7 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
         imageBytes: ByteArray,
         blockSize: Int,
         interBlockDelayMs: Long,
+        drainDelayMs: Long,
     ) {
         l2capJobs[connId.value]?.cancel()
         l2capJobs[connId.value] = l2capScope.launch {
@@ -331,7 +332,7 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
                     if (i < totalBlocks - 1) delay(interBlockDelayMs)
                 }
                 // Allow BLE stack to drain its transmit buffer before closing the socket
-                delay(500L)
+                delay(drainDelayMs)
             } catch (e: Exception) {
                 if (isActive) {
                     callback?.onL2capSendError(connId, "L2CAP send: ${e.message}")

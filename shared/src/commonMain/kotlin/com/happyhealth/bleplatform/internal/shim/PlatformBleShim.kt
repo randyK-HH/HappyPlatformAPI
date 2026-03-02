@@ -38,6 +38,7 @@ interface PlatformBleShim {
         imageBytes: ByteArray,
         blockSize: Int,
         interBlockDelayMs: Long,
+        drainDelayMs: Long,
     )
 }
 

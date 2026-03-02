@@ -57,6 +57,8 @@ class ConnectionSlot(
     private var downloadEnabled: Boolean = false
     private var downloadPendingStatusPoll: Boolean = false
     private var downloadFailsafeJob: Job? = null
+    private var cumulativeFramesDownloaded: Int = 0
+    private var cumulativeFramesTotal: Int = 0
 
     // FW update
     private var fwUpdateController: FwUpdateController? = null
@@ -137,6 +139,8 @@ class ConnectionSlot(
         if (state != HpyConnectionState.READY) return
         downloadEnabled = true
         downloadPendingStatusPoll = true
+        cumulativeFramesDownloaded = 0
+        cumulativeFramesTotal = 0
         commandQueue.enqueue(QueuedCommand(
             tag = "DL_GET_DEV_STATUS",
             charId = HpyCharId.CMD_RX,
@@ -168,7 +172,9 @@ class ConnectionSlot(
 
     fun startFwUpdate(imageBytes: ByteArray) {
         if (state != HpyConnectionState.READY) return
-        val controller = FwUpdateController(connId, imageBytes)
+        val controller = FwUpdateController(
+            connId, imageBytes, config.fwStreamInterBlockDelayMs, config.fwStreamDrainDelayMs,
+        )
         fwUpdateController = controller
         transition(HpyConnectionState.FW_UPDATING)
         handleFwUpdateAction(controller.start())
@@ -213,7 +219,7 @@ class ConnectionSlot(
             }
             is FwUpdateAction.StartL2capStream -> {
                 shim.l2capStreamSend(connId, action.psm, action.imageBytes,
-                    action.blockSize, action.delayMs)
+                    action.blockSize, action.delayMs, action.drainDelayMs)
             }
             is FwUpdateAction.EmitEvent -> {
                 emitEvent(action.event)
@@ -225,7 +231,9 @@ class ConnectionSlot(
                     fwUpdateJob?.cancel()
                     fwUpdateJob = null
                     fwErrorPendingDisconnect = true
-                    log("FW update error — awaiting disconnect")
+                    val timingMsg = "interBlockDelay=${config.fwStreamInterBlockDelayMs}ms, drainDelay=${config.fwStreamDrainDelayMs}ms"
+                    log("FW update error — awaiting disconnect ($timingMsg)")
+                    emitEvent(HpyEvent.Log(connId, "FW update error ($timingMsg)"))
                     fwErrorFallbackJob = scope.launch {
                         delay(5_000L)
                         if (fwErrorPendingDisconnect) {
@@ -247,7 +255,9 @@ class ConnectionSlot(
                 fwUpdateController = null
                 fwUpdateJob = null
                 wasFwUpdateRebooting = true
-                log("FW update complete — releasing GATT for ring reboot")
+                val timingMsg = "interBlockDelay=${config.fwStreamInterBlockDelayMs}ms, drainDelay=${config.fwStreamDrainDelayMs}ms"
+                log("FW update complete — releasing GATT for ring reboot ($timingMsg)")
+                emitEvent(HpyEvent.Log(connId, "FW update complete ($timingMsg)"))
                 transition(HpyConnectionState.FW_UPDATE_REBOOTING)
                 // Close the GATT so the ring can reboot cleanly.
                 // gatt.close() does NOT fire onDisconnected, so start reconnection explicitly.
@@ -864,6 +874,8 @@ class ConnectionSlot(
             batchSize = config.downloadBatchSize,
             maxRetries = config.downloadMaxRetries,
             supportsL2cap = useL2cap,
+            cumulativeFramesOffset = cumulativeFramesDownloaded,
+            cumulativeTotalOffset = cumulativeFramesTotal,
             onFrameEmit = { frameData -> emitEvent(HpyEvent.DownloadFrame(connId, frameData)) },
         )
         downloadController = controller
@@ -946,6 +958,10 @@ class ConnectionSlot(
             is DownloadAction.CloseL2cap -> shim.l2capClose(connId)
             is DownloadAction.EmitEvent -> emitEvent(action.event)
             is DownloadAction.SessionComplete -> {
+                downloadController?.let { ctrl ->
+                    cumulativeFramesDownloaded += ctrl.sessionFramesDownloaded
+                    cumulativeFramesTotal += ctrl.sessionFramesToDownload
+                }
                 downloadController = null
                 if (downloadEnabled) {
                     log("Download session complete -> WAITING")

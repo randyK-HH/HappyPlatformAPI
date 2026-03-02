@@ -56,6 +56,7 @@ class ConnectionSlot(
     private var downloadController: DownloadController? = null
     private var downloadEnabled: Boolean = false
     private var downloadPendingStatusPoll: Boolean = false
+    private var downloadFailsafeJob: Job? = null
 
     // FW update
     private var fwUpdateController: FwUpdateController? = null
@@ -149,6 +150,8 @@ class ConnectionSlot(
         downloadEnabled = false
         downloadPendingStatusPoll = false
         resumeDownloadAfterReconnect = false
+        downloadFailsafeJob?.cancel()
+        downloadFailsafeJob = null
         if (state == HpyConnectionState.DOWNLOADING) {
             downloadController?.let { shim.l2capClose(connId) }
             downloadController = null
@@ -509,6 +512,8 @@ class ConnectionSlot(
         }
         downloadEnabled = false
         downloadPendingStatusPoll = false
+        downloadFailsafeJob?.cancel()
+        downloadFailsafeJob = null
         fwUpdateController = null
         fwUpdateJob?.cancel()
         fwUpdateJob = null
@@ -630,6 +635,7 @@ class ConnectionSlot(
                         } else {
                             log("No unsynced frames — entering WAITING")
                             transition(HpyConnectionState.WAITING)
+                            startDownloadFailsafeTimer()
                         }
                     }
                 }
@@ -811,14 +817,23 @@ class ConnectionSlot(
             lastStatus = status
             emitEvent(HpyEvent.DeviceStatus(connId, status))
 
-            // Auto-trigger download on SuperframeClose if download is enabled
+            // Auto-trigger download on device status notification if download is enabled
             if ((state == HpyConnectionState.READY || state == HpyConnectionState.WAITING) &&
                 downloadEnabled &&
-                status.notifSender == CommandId.NOTIF_SENDER_SUPERFRAME_CLOSE &&
                 status.unsyncedFrames > 0
             ) {
-                log("SuperframeClose auto-trigger: ${status.unsyncedFrames} unsynced frames")
-                beginDownloadSession(status)
+                val shouldTrigger = if (deviceInfo.supportsNotifSender) {
+                    // FW >= 2.5.0.59: only trigger on SuperframeClose
+                    status.notifSender == CommandId.NOTIF_SENDER_SUPERFRAME_CLOSE
+                } else {
+                    // FW < 2.5.0.59: any notification is a potential trigger
+                    // (notifSender byte is not meaningful)
+                    true
+                }
+                if (shouldTrigger) {
+                    log("Download auto-trigger: ${status.unsyncedFrames} unsynced frames (notifSender=0x${status.notifSender.toString(16).padStart(2, '0')})")
+                    beginDownloadSession(status)
+                }
             }
         }
     }
@@ -840,6 +855,8 @@ class ConnectionSlot(
     // ---- Download ----
 
     private fun beginDownloadSession(status: DeviceStatusData) {
+        downloadFailsafeJob?.cancel()
+        downloadFailsafeJob = null
         log("L2CAP check: fw='${deviceInfo.fwVersion}', supportsL2cap=${deviceInfo.supportsL2capDownload}, preferL2cap=${config.preferL2capDownload}")
         val useL2cap = deviceInfo.supportsL2capDownload && config.preferL2capDownload
         val controller = DownloadController(
@@ -860,6 +877,30 @@ class ConnectionSlot(
             unsyncedFrames = status.unsyncedFrames,
         )
         handleDownloadAction(action)
+    }
+
+    private fun startDownloadFailsafeTimer() {
+        downloadFailsafeJob?.cancel()
+        val delayMs = if (firmwareTier == FirmwareTier.TIER_1) {
+            10L * 60 * 1000  // 10 minutes for TIER_1
+        } else {
+            21L * 60 * 1000  // 21 minutes for TIER_2
+        }
+        downloadFailsafeJob = scope.launch {
+            delay(delayMs)
+            if (downloadEnabled && (state == HpyConnectionState.WAITING || state == HpyConnectionState.READY)) {
+                val minutes = delayMs / 60000
+                log("Download failsafe timer fired (${minutes}min) — polling device status")
+                downloadPendingStatusPoll = true
+                commandQueue.enqueue(QueuedCommand(
+                    tag = "DL_FAILSAFE_STATUS",
+                    charId = HpyCharId.CMD_RX,
+                    data = CommandBuilder.buildGetDeviceStatus(),
+                    timeoutMs = config.commandTimeoutMs,
+                    completionType = CompletionType.ON_NOTIFICATION,
+                ))
+            }
+        }
     }
 
     private fun handleDownloadCommandResponse(cmdByte: Byte, value: ByteArray) {
@@ -909,6 +950,7 @@ class ConnectionSlot(
                 if (downloadEnabled) {
                     log("Download session complete -> WAITING")
                     transition(HpyConnectionState.WAITING)
+                    startDownloadFailsafeTimer()
                 } else {
                     log("Download session complete -> READY")
                     transition(HpyConnectionState.READY)

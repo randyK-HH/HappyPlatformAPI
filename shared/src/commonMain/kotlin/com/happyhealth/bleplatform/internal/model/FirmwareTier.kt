@@ -32,6 +32,28 @@ enum class FirmwareTier {
         }
 
         /**
+         * Check if the notification sender byte is meaningful for the given firmware version.
+         * Requires FW >= 2.5.0.59 (or FDA equivalents >= 2.5.1.0).
+         */
+        fun supportsNotifSender(version: String): Boolean {
+            val parts = version.trim().split(".")
+            if (parts.size < 4) return false
+
+            val project = parts[0].toIntOrNull() ?: return false
+            val major = parts[1].toIntOrNull() ?: return false
+            val minor = parts[2].toIntOrNull() ?: return false
+            val build = parts[3].substringBefore('-').toIntOrNull() ?: return false
+
+            if (project != 2 || major != 5) return project > 2
+
+            // 2.5.1.0+ are FDA releases (equivalent to >= 2.5.0.50)
+            if (minor >= 1) return true
+
+            // 2.5.0.BUILD: need build >= 59
+            return minor == 0 && build >= 59
+        }
+
+        /**
          * Check if L2CAP download is supported for the given firmware version.
          * Requires FW >= 2.5.0.54 (or FDA equivalents >= 2.5.1.0).
          */

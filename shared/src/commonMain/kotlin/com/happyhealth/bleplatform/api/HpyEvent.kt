@@ -43,6 +43,12 @@ sealed class HpyEvent {
         val extStatus: ResponseParser.ExtendedDeviceStatus,
     ) : HpyEvent()
 
+    data class SyncFrame(
+        override val connId: ConnectionId,
+        val frameCount: UInt,
+        val reboots: UInt,
+    ) : HpyEvent()
+
     data class CommandResult(
         override val connId: ConnectionId,
         val commandId: Byte,

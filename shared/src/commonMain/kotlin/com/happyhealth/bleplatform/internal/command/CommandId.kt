@@ -16,7 +16,10 @@ object CommandId {
     const val CONFIGURE_L2CAP: Byte = 0x34
     const val GET_FRAMES_L2CAP: Byte = 0x35
     const val GET_EXTENDED_DEVICE_STATUS: Byte = 0x38
+    const val SET_SYNC_FRAME: Byte = 0x19
+    const val GET_SYNC_FRAME: Byte = 0x1A
     const val L2CAP_THROUGHPUT_TEST: Byte = 0x64
+    const val ASSERT: Byte = 0xFD.toByte()
 
     const val UNRECOGNIZED_RESPONSE: Byte = 0xFF.toByte()
 

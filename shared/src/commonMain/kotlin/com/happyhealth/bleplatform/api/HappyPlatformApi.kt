@@ -83,6 +83,18 @@ class HappyPlatformApi internal constructor(
         return enqueueHcsCommand(connId, "SET_FINGER_DET", CommandBuilder.buildSetFingerDetection(enable), FirmwareTier.TIER_2)
     }
 
+    fun getSyncFrame(connId: ConnectionId): HpyResult {
+        return enqueueHcsCommand(connId, "GET_SYNC_FRAME", CommandBuilder.buildGetSyncFrame(), FirmwareTier.TIER_1)
+    }
+
+    fun setSyncFrame(connId: ConnectionId, frameCount: UInt, reboots: UInt): HpyResult {
+        return enqueueHcsCommand(connId, "SET_SYNC_FRAME", CommandBuilder.buildSetSyncFrame(frameCount, reboots), FirmwareTier.TIER_1)
+    }
+
+    fun assert(connId: ConnectionId): HpyResult {
+        return enqueueHcsCommand(connId, "ASSERT", CommandBuilder.buildAssert(), FirmwareTier.TIER_1)
+    }
+
     // ---- FW Update ----
 
     fun startFwUpdate(connId: ConnectionId, imageBytes: ByteArray): HpyResult {

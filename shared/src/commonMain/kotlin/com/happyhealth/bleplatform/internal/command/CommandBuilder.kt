@@ -144,6 +144,20 @@ object CommandBuilder {
         return cmd
     }
 
+    fun buildGetSyncFrame(): ByteArray =
+        byteArrayOf(CommandId.GET_SYNC_FRAME)
+
+    fun buildSetSyncFrame(frameCount: UInt, reboots: UInt): ByteArray {
+        val cmd = ByteArray(9)
+        cmd[0] = CommandId.SET_SYNC_FRAME
+        writeUInt32(cmd, 1, frameCount)
+        writeUInt32(cmd, 5, reboots)
+        return cmd
+    }
+
+    fun buildAssert(): ByteArray =
+        byteArrayOf(CommandId.ASSERT, 0xA5.toByte(), 0x2D, 0xB4.toByte())
+
     fun buildL2capThroughputTest(numPackets: Int): ByteArray {
         val cmd = ByteArray(3)
         cmd[0] = CommandId.L2CAP_THROUGHPUT_TEST

@@ -70,6 +70,11 @@ class ScanToReadyTest {
         statusResponse[27] = 0x04 // no conditional commands needed
         shim.simulateCommandResponse(connId, statusResponse)
 
+        // Memfault drain: GET_FILE_LENGTH response with length=0 (nothing to drain)
+        val mfLenResponse = ByteArray(5)
+        mfLenResponse[0] = CommandId.GET_FILE_LENGTH
+        shim.simulateCommandResponse(connId, mfLenResponse)
+
         // Verify READY state
         assertEquals(HpyConnectionState.READY, api.getConnectionState(connId))
 
@@ -145,6 +150,11 @@ class ScanToReadyTest {
         fingerResponse[0] = CommandId.SET_FINGER_DETECTION
         shim.simulateCommandResponse(connId, fingerResponse)
 
+        // Memfault drain: GET_FILE_LENGTH response with length=0 (nothing to drain)
+        val mfLenResponse = ByteArray(5)
+        mfLenResponse[0] = CommandId.GET_FILE_LENGTH
+        shim.simulateCommandResponse(connId, mfLenResponse)
+
         assertEquals(HpyConnectionState.READY, api.getConnectionState(connId))
 
         // Verify all handshake commands were sent in correct order
@@ -180,13 +190,19 @@ class ScanToReadyTest {
         utcResponse[0] = CommandId.SET_UTC
         shim.simulateCommandResponse(connId, utcResponse)
 
+        // Memfault drain: GET_FILE_LENGTH response with length=0 (nothing to drain)
+        val mfLenResponse = ByteArray(5)
+        mfLenResponse[0] = CommandId.GET_FILE_LENGTH
+        shim.simulateCommandResponse(connId, mfLenResponse)
+
         assertEquals(HpyConnectionState.READY, api.getConnectionState(connId))
 
-        // Should have sent: GET_DEVICE_STATUS, SET_UTC — no GET_DAQ_CONFIG, no SET_INFO
+        // Should have sent: GET_DEVICE_STATUS, SET_UTC, GET_FILE_LENGTH — no GET_DAQ_CONFIG, no SET_INFO
         val cmdBytes = shim.writtenCommands.map { it.second[0] }
         assertEquals(CommandId.GET_DEVICE_STATUS, cmdBytes[0])
         assertEquals(CommandId.SET_UTC, cmdBytes[1])
-        assertEquals(2, cmdBytes.size)
+        assertEquals(CommandId.GET_FILE_LENGTH, cmdBytes[2])
+        assertEquals(3, cmdBytes.size)
 
         api.destroy()
     }

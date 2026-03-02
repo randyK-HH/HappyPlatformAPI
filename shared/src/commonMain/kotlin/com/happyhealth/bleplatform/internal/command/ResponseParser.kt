@@ -129,6 +129,16 @@ object ResponseParser {
         )
     }
 
+    data class SyncFrameResponse(val frameCount: UInt, val reboots: UInt)
+
+    fun parseSyncFrame(value: ByteArray): SyncFrameResponse? {
+        if (value.size < 9) return null
+        return SyncFrameResponse(
+            frameCount = readUInt32(value, 1),
+            reboots = readUInt32(value, 5),
+        )
+    }
+
     fun parseGetFileLengthResponse(value: ByteArray): UInt? {
         if (value.size < 5) return null
         return readUInt32(value, 1)

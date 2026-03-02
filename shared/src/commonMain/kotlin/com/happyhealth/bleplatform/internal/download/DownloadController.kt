@@ -46,6 +46,7 @@ internal class DownloadController(
     private val batchSize: Int,
     private val maxRetries: Int,
     private val supportsL2cap: Boolean,
+    private val commandTimeoutMs: Long = 5000L,
     private val cumulativeFramesOffset: Int = 0,
     private val cumulativeTotalOffset: Int = 0,
     private val onFrameEmit: ((ByteArray) -> Unit)? = null,
@@ -315,15 +316,17 @@ internal class DownloadController(
         gattAccumulator?.reset()
         // Set RECEIVING_GATT immediately — the ring starts sending STREAM_TX data as soon
         // as it accepts the command, so we must be ready before any response arrives.
-        // Use ON_WRITE_ACK so the command queue is freed immediately — the CRC response
-        // arrives on FRAME_TX (not CMD_TX), handled separately by onCommandResponse.
+        // Use ON_NOTIFICATION so the command stays in-flight until the CRC response arrives,
+        // with a timeout that scales with batch size (~1s per 4KB frame).
         phase = DownloadPhase.RECEIVING_GATT
+        val sizeBasedTimeoutMs = batchFramesExpected.toLong() * 1000
+        val timeoutMs = maxOf(commandTimeoutMs, sizeBasedTimeoutMs)
         return DownloadAction.EnqueueCommand(QueuedCommand(
             tag = "DL_GET_FRAMES_GATT",
             charId = HpyCharId.CMD_RX,
             data = CommandBuilder.buildGetFramesGatt(syncFrameCount, syncFrameReboots, batchFramesExpected),
-            timeoutMs = 30000L,
-            completionType = CompletionType.ON_WRITE_ACK,
+            timeoutMs = timeoutMs,
+            completionType = CompletionType.ON_NOTIFICATION,
         ))
     }
 

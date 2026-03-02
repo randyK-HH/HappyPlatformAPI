@@ -34,7 +34,7 @@ class HandshakeRunnerTest {
 
     @Test
     fun tier0_completesImmediately() {
-        val runner = HandshakeRunner(FirmwareTier.TIER_0, ConnectionConfig(), mockTimeSource)
+        val runner = HandshakeRunner(FirmwareTier.TIER_0, ConnectionConfig(), mockTimeSource, memfaultEnabled = false)
         val first = runner.start()
         assertNull(first)
         assertTrue(runner.isComplete)
@@ -42,7 +42,7 @@ class HandshakeRunnerTest {
 
     @Test
     fun tier1_startsWithGetDeviceStatus() {
-        val runner = HandshakeRunner(FirmwareTier.TIER_1, ConnectionConfig(), mockTimeSource)
+        val runner = HandshakeRunner(FirmwareTier.TIER_1, ConnectionConfig(), mockTimeSource, memfaultEnabled = false)
         val first = runner.start()
         assertNotNull(first)
         assertEquals("HS_GET_DEV_STATUS", first.tag)
@@ -51,7 +51,7 @@ class HandshakeRunnerTest {
 
     @Test
     fun tier2_startsWithGetDaqConfig() {
-        val runner = HandshakeRunner(FirmwareTier.TIER_2, ConnectionConfig(), mockTimeSource)
+        val runner = HandshakeRunner(FirmwareTier.TIER_2, ConnectionConfig(), mockTimeSource, memfaultEnabled = false)
         val first = runner.start()
         assertNotNull(first)
         assertEquals("HS_GET_DAQ_CONFIG", first.tag)
@@ -60,7 +60,7 @@ class HandshakeRunnerTest {
 
     @Test
     fun tier2_fullHandshake_withConditionals() {
-        val runner = HandshakeRunner(FirmwareTier.TIER_2, ConnectionConfig(), mockTimeSource)
+        val runner = HandshakeRunner(FirmwareTier.TIER_2, ConnectionConfig(), mockTimeSource, memfaultEnabled = false)
 
         // Step 1: GET_DAQ_CONFIG
         val cmd1 = runner.start()
@@ -96,7 +96,7 @@ class HandshakeRunnerTest {
 
     @Test
     fun tier1_noSetInfo() {
-        val runner = HandshakeRunner(FirmwareTier.TIER_1, ConnectionConfig(), mockTimeSource)
+        val runner = HandshakeRunner(FirmwareTier.TIER_1, ConnectionConfig(), mockTimeSource, memfaultEnabled = false)
 
         // Step 1: GET_DEVICE_STATUS
         val cmd1 = runner.start()
@@ -121,7 +121,7 @@ class HandshakeRunnerTest {
 
     @Test
     fun tier2_noConditionals_whenFlagsZero() {
-        val runner = HandshakeRunner(FirmwareTier.TIER_2, ConnectionConfig(), mockTimeSource)
+        val runner = HandshakeRunner(FirmwareTier.TIER_2, ConnectionConfig(), mockTimeSource, memfaultEnabled = false)
 
         val cmd1 = runner.start()!! // GET_DAQ_CONFIG
         val cmd2 = runner.onCommandComplete()!! // GET_DEVICE_STATUS
@@ -139,6 +139,7 @@ class HandshakeRunnerTest {
             FirmwareTier.TIER_2,
             ConnectionConfig(skipFingerDetection = true),
             mockTimeSource,
+            memfaultEnabled = false,
         )
 
         runner.start() // GET_DAQ_CONFIG

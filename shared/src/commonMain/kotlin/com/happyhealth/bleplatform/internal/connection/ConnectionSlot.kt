@@ -662,6 +662,12 @@ class ConnectionSlot(
                     emitEvent(HpyEvent.ExtendedDeviceStatus(connId, ext))
                 }
             }
+            CommandId.GET_SYNC_FRAME -> {
+                val sf = ResponseParser.parseSyncFrame(value)
+                if (sf != null) {
+                    emitEvent(HpyEvent.SyncFrame(connId, sf.frameCount, sf.reboots))
+                }
+            }
             else -> {
                 emitEvent(HpyEvent.CommandResult(connId, cmdByte, value.copyOf()))
             }
@@ -816,6 +822,7 @@ class ConnectionSlot(
             value[0] == CommandId.GET_FRAMES
         ) {
             val controller = downloadController ?: return
+            commandQueue.signalDone()
             val action = controller.onCommandResponse(value[0], value)
             handleDownloadAction(action)
             return
@@ -874,6 +881,7 @@ class ConnectionSlot(
             batchSize = config.downloadBatchSize,
             maxRetries = config.downloadMaxRetries,
             supportsL2cap = useL2cap,
+            commandTimeoutMs = config.commandTimeoutMs,
             cumulativeFramesOffset = cumulativeFramesDownloaded,
             cumulativeTotalOffset = cumulativeFramesTotal,
             onFrameEmit = { frameData -> emitEvent(HpyEvent.DownloadFrame(connId, frameData)) },

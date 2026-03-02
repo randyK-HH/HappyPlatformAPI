@@ -159,13 +159,18 @@ class HandshakeRunner(
                 timeoutMs = config.commandTimeoutMs,
                 completionType = CompletionType.ON_NOTIFICATION,
             )
-            HandshakeStep.ReadMemfaultFile -> QueuedCommand(
-                tag = "HS_MF_READ",
-                charId = com.happyhealth.bleplatform.internal.model.HpyCharId.CMD_RX,
-                data = CommandBuilder.buildReadFile(MEMFAULT_FILE_ID, 0u, memfaultExpectedLength),
-                timeoutMs = config.commandTimeoutMs,
-                completionType = CompletionType.ON_NOTIFICATION,
-            )
+            HandshakeStep.ReadMemfaultFile -> {
+                // Scale timeout with file size: ~1s per 4KB, minimum standard timeout
+                val sizeBasedTimeoutMs = (memfaultExpectedLength.toLong() / 4096 + 1) * 1000
+                val timeoutMs = maxOf(config.commandTimeoutMs, sizeBasedTimeoutMs)
+                QueuedCommand(
+                    tag = "HS_MF_READ",
+                    charId = com.happyhealth.bleplatform.internal.model.HpyCharId.CMD_RX,
+                    data = CommandBuilder.buildReadFile(MEMFAULT_FILE_ID, 0u, memfaultExpectedLength),
+                    timeoutMs = timeoutMs,
+                    completionType = CompletionType.ON_NOTIFICATION,
+                )
+            }
         }
     }
 

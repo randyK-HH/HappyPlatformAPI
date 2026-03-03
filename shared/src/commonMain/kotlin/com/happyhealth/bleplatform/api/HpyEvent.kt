@@ -77,6 +77,7 @@ sealed class HpyEvent {
         val framesInBatch: Int,
         val totalFramesDownloaded: Int,
         val crcValid: Boolean,
+        val sessionFramesDownloaded: Int = 0,
     ) : HpyEvent()
 
     data class DownloadProgress(
@@ -84,6 +85,8 @@ sealed class HpyEvent {
         val framesDownloaded: Int,
         val framesTotal: Int,
         val transport: String = "",
+        val sessionFramesDownloaded: Int = 0,
+        val sessionFramesTotal: Int = 0,
     ) : HpyEvent()
 
     data class DownloadFrame(
@@ -99,6 +102,7 @@ sealed class HpyEvent {
     data class DownloadComplete(
         override val connId: ConnectionId,
         val totalFrames: Int,
+        val sessionFrames: Int = 0,
     ) : HpyEvent()
 
     data class FwUpdateProgress(

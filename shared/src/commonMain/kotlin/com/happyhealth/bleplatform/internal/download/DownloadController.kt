@@ -84,7 +84,7 @@ internal class DownloadController(
         if (unsyncedFrames <= 0) {
             phase = DownloadPhase.DONE
             return DownloadAction.Multiple(listOf(
-                DownloadAction.EmitEvent(HpyEvent.DownloadComplete(connId, cumulativeFramesOffset)),
+                DownloadAction.EmitEvent(HpyEvent.DownloadComplete(connId, cumulativeFramesOffset, sessionFrames = 0)),
                 DownloadAction.SessionComplete,
             ))
         }
@@ -143,10 +143,12 @@ internal class DownloadController(
         batchRetryCount = 0
 
         val batchEvent = DownloadAction.EmitEvent(
-            HpyEvent.DownloadBatch(connId, framesReceived, cumulativeFramesOffset + totalFramesDownloaded, crcValid)
+            HpyEvent.DownloadBatch(connId, framesReceived, cumulativeFramesOffset + totalFramesDownloaded, crcValid,
+                sessionFramesDownloaded = totalFramesDownloaded)
         )
         val progressEvent = DownloadAction.EmitEvent(
-            HpyEvent.DownloadProgress(connId, cumulativeFramesOffset + totalFramesDownloaded, cumulativeTotalOffset + totalFramesToDownload, transportString)
+            HpyEvent.DownloadProgress(connId, cumulativeFramesOffset + totalFramesDownloaded, cumulativeTotalOffset + totalFramesToDownload, transportString,
+                sessionFramesDownloaded = totalFramesDownloaded, sessionFramesTotal = totalFramesToDownload)
         )
 
         val remaining = totalFramesToDownload - totalFramesDownloaded
@@ -172,6 +174,8 @@ internal class DownloadController(
             HpyEvent.DownloadProgress(
                 connId, cumulativeFramesOffset + totalFramesDownloaded + batchFramesReceived,
                 cumulativeTotalOffset + totalFramesToDownload, transportString,
+                sessionFramesDownloaded = totalFramesDownloaded + batchFramesReceived,
+                sessionFramesTotal = totalFramesToDownload,
             )
         )
     }
@@ -209,10 +213,12 @@ internal class DownloadController(
         batchRetryCount = 0
 
         val batchEvent = DownloadAction.EmitEvent(
-            HpyEvent.DownloadBatch(connId, framesReceived, cumulativeFramesOffset + totalFramesDownloaded, crcValid)
+            HpyEvent.DownloadBatch(connId, framesReceived, cumulativeFramesOffset + totalFramesDownloaded, crcValid,
+                sessionFramesDownloaded = totalFramesDownloaded)
         )
         val progressEvent = DownloadAction.EmitEvent(
-            HpyEvent.DownloadProgress(connId, cumulativeFramesOffset + totalFramesDownloaded, cumulativeTotalOffset + totalFramesToDownload, transportString)
+            HpyEvent.DownloadProgress(connId, cumulativeFramesOffset + totalFramesDownloaded, cumulativeTotalOffset + totalFramesToDownload, transportString,
+                sessionFramesDownloaded = totalFramesDownloaded, sessionFramesTotal = totalFramesToDownload)
         )
 
         val remaining = totalFramesToDownload - totalFramesDownloaded
@@ -334,7 +340,8 @@ internal class DownloadController(
     private fun finishSession(precedingActions: List<DownloadAction>): DownloadAction {
         phase = DownloadPhase.DONE
         val actions = precedingActions + listOf(
-            DownloadAction.EmitEvent(HpyEvent.DownloadComplete(connId, cumulativeFramesOffset + totalFramesDownloaded)),
+            DownloadAction.EmitEvent(HpyEvent.DownloadComplete(connId, cumulativeFramesOffset + totalFramesDownloaded,
+                sessionFrames = totalFramesDownloaded)),
             DownloadAction.SessionComplete,
         )
         return DownloadAction.Multiple(actions)

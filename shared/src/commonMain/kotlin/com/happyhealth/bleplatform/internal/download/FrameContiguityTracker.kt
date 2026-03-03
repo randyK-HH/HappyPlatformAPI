@@ -19,7 +19,8 @@ internal class FrameContiguityTracker {
     private var batchFrameIndex: Int = 0
 
     fun setBaseline(syncFrameCount: UInt, syncFrameReboots: UInt) {
-        expectedFrameCount = syncFrameCount
+        // Sync frame is the last frame already read; first downloaded frame = fc + 1
+        expectedFrameCount = syncFrameCount + 1u
         expectedReboots = syncFrameReboots
     }
 
@@ -38,14 +39,24 @@ internal class FrameContiguityTracker {
     }
 
     fun checkFrame(frameData: ByteArray) {
-        if (frameData.size < 42) return  // need bytes [30-33] and [38-41]
+        if (frameData.size < 41) return  // need bytes [29-32] and [37-40]
 
-        val actualCount = readUInt32(frameData, 30)
-        val actualReboots = readUInt32(frameData, 38)
+        val actualCount = readUInt32(frameData, 29)
+        val actualReboots = readUInt32(frameData, 37)
 
-        if (actualReboots != expectedReboots) {
-            // Reboot boundary — re-sync expected values, not an anomaly
-        } else if (actualCount != expectedFrameCount) {
+        val isAnomaly = when {
+            actualReboots == expectedReboots ->
+                // Same boot: frame_count must match expected
+                actualCount != expectedFrameCount
+            actualReboots == expectedReboots + 1u ->
+                // Single reboot: fc must restart at 1
+                actualCount != 1u
+            else ->
+                // rb jumped by more than 1: missed reboots
+                true
+        }
+
+        if (isAnomaly) {
             batchAnomalies.add(FrameAnomaly(
                 frameIndex = batchFrameIndex,
                 expectedCount = expectedFrameCount,

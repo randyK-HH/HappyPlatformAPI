@@ -160,8 +160,10 @@ class HandshakeRunner(
                 completionType = CompletionType.ON_NOTIFICATION,
             )
             HandshakeStep.ReadMemfaultFile -> {
-                // Scale timeout with file size: ~1s per 4KB, minimum standard timeout
-                val sizeBasedTimeoutMs = (memfaultExpectedLength.toLong() / 4096 + 1) * 1000
+                // Scale timeout with file size: ~1s per 1KB, minimum standard timeout.
+                // Large chunks (e.g. 70KB assert stack dump) can take 30+ seconds
+                // due to CI overhead, flash read latency, and platform notification pacing.
+                val sizeBasedTimeoutMs = (memfaultExpectedLength.toLong() / 1024 + 1) * 1000
                 val timeoutMs = maxOf(config.commandTimeoutMs, sizeBasedTimeoutMs)
                 QueuedCommand(
                     tag = "HS_MF_READ",

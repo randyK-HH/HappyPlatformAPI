@@ -68,6 +68,13 @@ internal class DownloadController(
     val sessionFramesDownloaded: Int get() = totalFramesDownloaded
     val sessionFramesToDownload: Int get() = totalFramesToDownload
 
+    /** Sync position exposed for reconnect accounting by ConnectionSlot. */
+    val currentSyncFrameCount: UInt get() = syncFrameCount
+    val currentSyncReboots: UInt get() = syncFrameReboots
+
+    private val contiguityTracker = FrameContiguityTracker()
+    var lastRssi: Int? = null
+
     private var gattAccumulator: GattFrameAccumulator? = null
 
     fun startSession(
@@ -80,6 +87,7 @@ internal class DownloadController(
         this.totalFramesToDownload = unsyncedFrames
         this.totalFramesDownloaded = 0
         this.batchRetryCount = 0
+        contiguityTracker.setBaseline(syncFrameCount, syncFrameReboots)
 
         if (unsyncedFrames <= 0) {
             phase = DownloadPhase.DONE
@@ -94,6 +102,10 @@ internal class DownloadController(
         } else {
             startGattPath()
         }
+    }
+
+    fun onFrameData(frameData: ByteArray) {
+        contiguityTracker.checkFrame(frameData)
     }
 
     fun onCommandResponse(cmdByte: Byte, value: ByteArray): DownloadAction {
@@ -135,16 +147,28 @@ internal class DownloadController(
 
         if (!crcValid && batchRetryCount < maxRetries) {
             batchRetryCount++
+            contiguityTracker.restoreCheckpoint()
             return requestNextL2capBatch()
         }
 
+        val anomalies = contiguityTracker.commitBatch()
+        val retries = batchRetryCount
         totalFramesDownloaded += framesReceived
         syncFrameCount += framesReceived.toUInt()
         batchRetryCount = 0
 
+        val anomalyActions = anomalies.map { a ->
+            DownloadAction.EmitEvent(HpyEvent.Log(connId,
+                "NCF: frame[${a.frameIndex}] expected fc=${a.expectedCount} rb=${a.expectedReboots}, " +
+                "got fc=${a.actualCount} rb=${a.actualReboots}"))
+        }
         val batchEvent = DownloadAction.EmitEvent(
             HpyEvent.DownloadBatch(connId, framesReceived, cumulativeFramesOffset + totalFramesDownloaded, crcValid,
-                sessionFramesDownloaded = totalFramesDownloaded)
+                sessionFramesDownloaded = totalFramesDownloaded,
+                transport = transportString,
+                rssi = lastRssi,
+                retryCount = retries,
+                ncfCount = anomalies.size)
         )
         val progressEvent = DownloadAction.EmitEvent(
             HpyEvent.DownloadProgress(connId, cumulativeFramesOffset + totalFramesDownloaded, cumulativeTotalOffset + totalFramesToDownload, transportString,
@@ -154,13 +178,13 @@ internal class DownloadController(
         val remaining = totalFramesToDownload - totalFramesDownloaded
         return if (remaining <= 0) {
             phase = DownloadPhase.CONFIGURE_L2CAP_CLOSE
-            DownloadAction.Multiple(listOf(
+            DownloadAction.Multiple(anomalyActions + listOf(
                 batchEvent,
                 progressEvent,
                 closeL2capCommand(),
             ))
         } else {
-            DownloadAction.Multiple(listOf(
+            DownloadAction.Multiple(anomalyActions + listOf(
                 batchEvent,
                 progressEvent,
                 requestNextL2capBatch(),
@@ -205,16 +229,28 @@ internal class DownloadController(
 
         if (!crcValid && batchRetryCount < maxRetries) {
             batchRetryCount++
+            contiguityTracker.restoreCheckpoint()
             return requestNextGattBatch()
         }
 
+        val anomalies = contiguityTracker.commitBatch()
+        val retries = batchRetryCount
         totalFramesDownloaded += framesReceived
         syncFrameCount += framesReceived.toUInt()
         batchRetryCount = 0
 
+        val anomalyActions = anomalies.map { a ->
+            DownloadAction.EmitEvent(HpyEvent.Log(connId,
+                "NCF: frame[${a.frameIndex}] expected fc=${a.expectedCount} rb=${a.expectedReboots}, " +
+                "got fc=${a.actualCount} rb=${a.actualReboots}"))
+        }
         val batchEvent = DownloadAction.EmitEvent(
             HpyEvent.DownloadBatch(connId, framesReceived, cumulativeFramesOffset + totalFramesDownloaded, crcValid,
-                sessionFramesDownloaded = totalFramesDownloaded)
+                sessionFramesDownloaded = totalFramesDownloaded,
+                transport = transportString,
+                rssi = lastRssi,
+                retryCount = retries,
+                ncfCount = anomalies.size)
         )
         val progressEvent = DownloadAction.EmitEvent(
             HpyEvent.DownloadProgress(connId, cumulativeFramesOffset + totalFramesDownloaded, cumulativeTotalOffset + totalFramesToDownload, transportString,
@@ -223,9 +259,9 @@ internal class DownloadController(
 
         val remaining = totalFramesToDownload - totalFramesDownloaded
         return if (remaining <= 0) {
-            finishSession(listOf(batchEvent, progressEvent))
+            finishSession(anomalyActions + listOf(batchEvent, progressEvent))
         } else {
-            DownloadAction.Multiple(listOf(
+            DownloadAction.Multiple(anomalyActions + listOf(
                 batchEvent,
                 progressEvent,
                 requestNextGattBatch(),
@@ -258,6 +294,7 @@ internal class DownloadController(
     }
 
     private fun requestNextL2capBatch(): DownloadAction {
+        contiguityTracker.saveCheckpoint()
         val remaining = totalFramesToDownload - totalFramesDownloaded
         batchFramesExpected = minOf(remaining, batchSize)
         batchFramesReceived = 0
@@ -309,12 +346,16 @@ internal class DownloadController(
 
     private fun startGattPath(): DownloadAction {
         gattAccumulator = GattFrameAccumulator(
-            onFrame = { frameData -> onFrameEmit?.invoke(frameData) },
+            onFrame = { frameData ->
+                contiguityTracker.checkFrame(frameData)
+                onFrameEmit?.invoke(frameData)
+            },
         )
         return requestNextGattBatch()
     }
 
     private fun requestNextGattBatch(): DownloadAction {
+        contiguityTracker.saveCheckpoint()
         val remaining = totalFramesToDownload - totalFramesDownloaded
         batchFramesExpected = minOf(remaining, batchSize)
         batchFramesReceived = 0

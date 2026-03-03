@@ -78,6 +78,13 @@ class ConnectionSlot(
     private var connectResultDeferred: CompletableDeferred<Boolean>? = null
     private var resumeDownloadAfterReconnect: Boolean = false
 
+    // RSSI tracking for download metadata
+    private var lastRssi: Int? = null
+
+    // Reconnect frame accounting
+    private var preDisconnectSyncFrameCount: UInt? = null
+    private var preDisconnectSyncReboots: UInt? = null
+
     // Persists across reconnections — NOT cleared on disconnect
     private val memfaultBuffer = MemfaultBuffer()
 
@@ -306,6 +313,8 @@ class ConnectionSlot(
         // Capture download state before cleanup destroys it
         val wasDownloading = downloadEnabled
         val interruptedBatchFrames = downloadController?.batchFramesReceived ?: 0
+        val preSyncFc = downloadController?.currentSyncFrameCount
+        val preSyncRb = downloadController?.currentSyncReboots
 
         cleanupOperations()
 
@@ -348,6 +357,8 @@ class ConnectionSlot(
         // 5. Unexpected disconnect — start normal reconnection
         if (wasDownloading) {
             resumeDownloadAfterReconnect = true
+            preDisconnectSyncFrameCount = preSyncFc
+            preDisconnectSyncReboots = preSyncRb
             if (interruptedBatchFrames > 0) {
                 log("Download interrupted: $interruptedBatchFrames partial-batch frames to discard")
                 emitEvent(HpyEvent.DownloadInterrupted(connId, interruptedBatchFrames))
@@ -431,6 +442,8 @@ class ConnectionSlot(
     fun onRssiRead(rssi: Int) {
         rssiTimeoutJob?.cancel()
         rssiTimeoutJob = null
+        lastRssi = rssi
+        downloadController?.lastRssi = rssi
         val status = pendingAutoDownloadStatus
         if (status != null) {
             pendingAutoDownloadStatus = null
@@ -918,8 +931,22 @@ class ConnectionSlot(
             onFrameEmit = { frameData -> emitEvent(HpyEvent.DownloadFrame(connId, frameData)) },
         )
         downloadController = controller
+        controller.lastRssi = lastRssi
         downloadEnabled = true
         transition(HpyConnectionState.DOWNLOADING)
+
+        // Reconnect sync accounting — only log when positions differ
+        preDisconnectSyncFrameCount?.let { prevFc ->
+            val prevRb = preDisconnectSyncReboots ?: 0u
+            val postFc = status.syncFrameCount
+            val postRb = status.syncFrameReboots
+            if (prevFc != postFc || prevRb != postRb) {
+                log("Reconnect sync audit: pre=(fc=$prevFc, rb=$prevRb) post=(fc=$postFc, rb=$postRb)")
+            }
+            preDisconnectSyncFrameCount = null
+            preDisconnectSyncReboots = null
+        }
+
         log("Download starting: ${status.unsyncedFrames} frames, transport=${if (useL2cap) "L2CAP" else "GATT"}")
 
         val action = controller.startSession(
@@ -969,6 +996,7 @@ class ConnectionSlot(
     }
 
     fun onL2capFrame(frameData: ByteArray) {
+        downloadController?.onFrameData(frameData)
         emitEvent(HpyEvent.DownloadFrame(connId, frameData))
         val controller = downloadController ?: return
         val action = controller.onFrameReceived()

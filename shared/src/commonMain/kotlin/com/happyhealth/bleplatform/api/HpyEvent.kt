@@ -78,6 +78,10 @@ sealed class HpyEvent {
         val totalFramesDownloaded: Int,
         val crcValid: Boolean,
         val sessionFramesDownloaded: Int = 0,
+        val transport: String = "",
+        val rssi: Int? = null,
+        val retryCount: Int = 0,
+        val ncfCount: Int = 0,
     ) : HpyEvent()
 
     data class DownloadProgress(

@@ -1,6 +1,7 @@
 package com.happyhealth.bleplatform.internal.download
 
 import com.happyhealth.bleplatform.api.ConnectionId
+import com.happyhealth.bleplatform.api.HpyErrorCode
 import com.happyhealth.bleplatform.api.HpyEvent
 import com.happyhealth.bleplatform.internal.command.CommandBuilder
 import com.happyhealth.bleplatform.internal.command.CommandId
@@ -161,6 +162,11 @@ internal class DownloadController(
         syncFrameCount += framesReceived.toUInt()
         batchRetryCount = 0
 
+        val crcFailEvent = if (!crcValid) {
+            listOf(DownloadAction.EmitEvent(HpyEvent.Error(connId, HpyErrorCode.DOWNLOAD_CRC_FAIL,
+                "Batch accepted with bad CRC after $retries retries ($framesReceived frames at fc=$syncFrameCount, L2CAP)")))
+        } else emptyList()
+
         val anomalyActions = anomalies.map { a ->
             DownloadAction.EmitEvent(HpyEvent.Log(connId,
                 "NCF: frame[${a.frameIndex}] expected fc=${a.expectedCount} rb=${a.expectedReboots}, " +
@@ -182,13 +188,13 @@ internal class DownloadController(
         val remaining = totalFramesToDownload - totalFramesDownloaded
         return if (remaining <= 0) {
             phase = DownloadPhase.CONFIGURE_L2CAP_CLOSE
-            DownloadAction.Multiple(anomalyActions + listOf(
+            DownloadAction.Multiple(crcFailEvent + anomalyActions + listOf(
                 batchEvent,
                 progressEvent,
                 closeL2capCommand(),
             ))
         } else {
-            DownloadAction.Multiple(anomalyActions + listOf(
+            DownloadAction.Multiple(crcFailEvent + anomalyActions + listOf(
                 batchEvent,
                 progressEvent,
                 requestNextL2capBatch(),
@@ -252,6 +258,11 @@ internal class DownloadController(
         syncFrameCount += framesReceived.toUInt()
         batchRetryCount = 0
 
+        val crcFailEvent = if (!crcValid) {
+            listOf(DownloadAction.EmitEvent(HpyEvent.Error(connId, HpyErrorCode.DOWNLOAD_CRC_FAIL,
+                "Batch accepted with bad CRC after $retries retries ($framesReceived frames at fc=$syncFrameCount, GATT)")))
+        } else emptyList()
+
         val anomalyActions = anomalies.map { a ->
             DownloadAction.EmitEvent(HpyEvent.Log(connId,
                 "NCF: frame[${a.frameIndex}] expected fc=${a.expectedCount} rb=${a.expectedReboots}, " +
@@ -272,9 +283,9 @@ internal class DownloadController(
 
         val remaining = totalFramesToDownload - totalFramesDownloaded
         return if (remaining <= 0) {
-            finishSession(anomalyActions + listOf(batchEvent, progressEvent))
+            finishSession(crcFailEvent + anomalyActions + listOf(batchEvent, progressEvent))
         } else {
-            DownloadAction.Multiple(anomalyActions + listOf(
+            DownloadAction.Multiple(crcFailEvent + anomalyActions + listOf(
                 batchEvent,
                 progressEvent,
                 requestNextGattBatch(),

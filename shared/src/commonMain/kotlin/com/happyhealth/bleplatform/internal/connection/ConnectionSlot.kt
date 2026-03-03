@@ -60,6 +60,10 @@ class ConnectionSlot(
     private var cumulativeFramesDownloaded: Int = 0
     private var cumulativeFramesTotal: Int = 0
 
+    // RSSI pre-check for auto-download
+    private var pendingAutoDownloadStatus: DeviceStatusData? = null
+    private var rssiTimeoutJob: Job? = null
+
     // FW update
     private var fwUpdateController: FwUpdateController? = null
     private var fwUpdateJob: Job? = null
@@ -424,6 +428,22 @@ class ConnectionSlot(
         // ON_NOTIFICATION commands wait for the notification response
     }
 
+    fun onRssiRead(rssi: Int) {
+        rssiTimeoutJob?.cancel()
+        rssiTimeoutJob = null
+        val status = pendingAutoDownloadStatus
+        if (status != null) {
+            pendingAutoDownloadStatus = null
+            if (rssi > config.minRssi) {
+                log("RSSI $rssi dBm OK, starting session")
+                beginDownloadSession(status)
+            } else {
+                log("RSSI $rssi dBm too low (<= ${config.minRssi}), skipping session")
+            }
+        }
+        emitEvent(HpyEvent.RssiRead(connId, rssi))
+    }
+
     // ---- Reconnection ----
 
     private fun startNormalReconnection() {
@@ -524,6 +544,9 @@ class ConnectionSlot(
         downloadPendingStatusPoll = false
         downloadFailsafeJob?.cancel()
         downloadFailsafeJob = null
+        pendingAutoDownloadStatus = null
+        rssiTimeoutJob?.cancel()
+        rssiTimeoutJob = null
         fwUpdateController = null
         fwUpdateJob?.cancel()
         fwUpdateJob = null
@@ -847,8 +870,18 @@ class ConnectionSlot(
                     true
                 }
                 if (shouldTrigger) {
-                    log("Download auto-trigger: ${status.unsyncedFrames} unsynced frames (notifSender=0x${status.notifSender.toString(16).padStart(2, '0')})")
-                    beginDownloadSession(status)
+                    log("Download auto-trigger: ${status.unsyncedFrames} unsynced — checking RSSI")
+                    pendingAutoDownloadStatus = status
+                    shim.readRssi(connId)
+                    rssiTimeoutJob?.cancel()
+                    rssiTimeoutJob = scope.launch {
+                        delay(3000)
+                        pendingAutoDownloadStatus?.let { pending ->
+                            pendingAutoDownloadStatus = null
+                            log("RSSI read timeout, proceeding with download")
+                            beginDownloadSession(pending)
+                        }
+                    }
                 }
             }
         }

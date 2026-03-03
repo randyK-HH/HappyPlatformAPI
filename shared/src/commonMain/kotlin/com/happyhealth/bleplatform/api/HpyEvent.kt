@@ -120,6 +120,11 @@ sealed class HpyEvent {
         override val connId: ConnectionId,
         val chunksDownloaded: Int,
     ) : HpyEvent()
+
+    data class RssiRead(
+        override val connId: ConnectionId,
+        val rssi: Int,
+    ) : HpyEvent()
 }
 
 enum class HpyErrorCode {

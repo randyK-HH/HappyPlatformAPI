@@ -141,7 +141,11 @@ class ConnectionManager(
     }
 
     override fun onRssiRead(connId: ConnectionId, rssi: Int) {
-        // Emit as event if needed
+        getSlot(connId)?.onRssiRead(rssi)
+    }
+
+    fun readRssi(connId: ConnectionId) {
+        shim.readRssi(connId)
     }
 
     override fun onL2capConnected(connId: ConnectionId) {

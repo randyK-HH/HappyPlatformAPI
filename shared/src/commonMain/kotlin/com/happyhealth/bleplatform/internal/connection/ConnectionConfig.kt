@@ -32,4 +32,5 @@ data class ConnectionConfig(
     val fwReconnectSchedule: List<ReconnectTier> = FW_RECONNECT_SCHEDULE,
     val fwStreamInterBlockDelayMs: Long = 30L,
     val fwStreamDrainDelayMs: Long = 2000L,
+    val minRssi: Int = -80,
 )

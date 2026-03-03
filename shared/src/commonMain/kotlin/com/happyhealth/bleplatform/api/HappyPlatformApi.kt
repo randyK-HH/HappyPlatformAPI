@@ -137,6 +137,12 @@ class HappyPlatformApi internal constructor(
         manager.getSlot(connId)?.markMemfaultChunksUploaded()
     }
 
+    fun readRssi(connId: ConnectionId): HpyResult {
+        val slot = manager.getSlot(connId) ?: return HpyResult.ErrInvalidConnId
+        manager.readRssi(connId)
+        return HpyResult.Ok
+    }
+
     fun getActiveConnections(): List<ConnectionId> {
         return manager.getActiveConnections().map { it.connId }
     }
@@ -188,6 +194,7 @@ fun createHappyPlatformApi(
         downloadBatchSize = config.downloadBatchSize,
         downloadMaxRetries = config.downloadMaxRetries,
         preferL2capDownload = config.preferL2capDownload,
+        minRssi = config.minRssi,
     )
     val manager = ConnectionManager(shim, timeSource, scope, connConfig)
     return HappyPlatformApi(manager, scope)

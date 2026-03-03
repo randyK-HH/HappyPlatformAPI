@@ -58,6 +58,7 @@ class ConnectionSlot(
     private var downloadPendingStatusPoll: Boolean = false
     private var downloadFailsafeJob: Job? = null
     private var l2capConnectTimeoutJob: Job? = null
+    private var subscriptionTimeoutJob: Job? = null
     private var downloadStallJob: Job? = null
     private var cumulativeFramesDownloaded: Int = 0
     private var cumulativeFramesTotal: Int = 0
@@ -580,6 +581,8 @@ class ConnectionSlot(
         downloadFailsafeJob = null
         l2capConnectTimeoutJob?.cancel()
         l2capConnectTimeoutJob = null
+        subscriptionTimeoutJob?.cancel()
+        subscriptionTimeoutJob = null
         downloadStallJob?.cancel()
         downloadStallJob = null
         pendingAutoDownloadStatus = null
@@ -605,9 +608,21 @@ class ConnectionSlot(
         pendingNotifSubscriptions.clear()
         pendingNotifSubscriptions.addAll(charsToSubscribe)
         shim.subscribeNotifications(connId, first, true)
+
+        // Timeout: if all subscriptions don't complete within 20s, disconnect
+        subscriptionTimeoutJob = scope.launch {
+            delay(20_000L)
+            log("Notification subscription timeout (20s)")
+            emitEvent(HpyEvent.Error(connId, HpyErrorCode.NOTIFICATION_SUBSCRIBE_FAIL,
+                "Notification subscription timed out"))
+            shim.disconnect(connId)
+            transition(HpyConnectionState.DISCONNECTED)
+        }
     }
 
     private fun startDisReads() {
+        subscriptionTimeoutJob?.cancel()
+        subscriptionTimeoutJob = null
         val disChars = mutableListOf(
             HpyCharId.DIS_SERIAL_NUMBER,
             HpyCharId.DIS_FW_VERSION,

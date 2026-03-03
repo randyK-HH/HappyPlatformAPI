@@ -399,6 +399,9 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
             val charId = CharacteristicMap.getCharId(char.uuid) ?: return
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 callback?.onCharacteristicRead(connId, charId, char.value ?: byteArrayOf())
+            } else {
+                Log.w(TAG, "[$connId] Characteristic read failed: $charId status=$status")
+                callback?.onCharacteristicReadFailed(connId, charId)
             }
         }
 

@@ -124,6 +124,10 @@ class ConnectionManager(
         getSlot(connId)?.onCharacteristicRead(charId, value)
     }
 
+    override fun onCharacteristicReadFailed(connId: ConnectionId, charId: HpyCharId) {
+        getSlot(connId)?.onCharacteristicReadFailed(charId)
+    }
+
     override fun onCharacteristicChanged(connId: ConnectionId, charId: HpyCharId, value: ByteArray) {
         getSlot(connId)?.onCharacteristicChanged(charId, value)
     }

@@ -26,6 +26,8 @@ data class ConnectionConfig(
     val downloadBatchSize: Int = 64,
     val downloadMaxRetries: Int = 1,
     val preferL2capDownload: Boolean = true,
+    val l2capConnectTimeoutMs: Long = 15_000L,
+    val downloadStallTimeoutMs: Long = 60_000L,
     val reconnectMaxAttempts: Int = 64,
     val reconnectSchedule: List<ReconnectTier> = NORMAL_RECONNECT_SCHEDULE,
     val fwRebootWaitMs: Long = 30_000L,

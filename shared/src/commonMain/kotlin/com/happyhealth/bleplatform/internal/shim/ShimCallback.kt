@@ -16,6 +16,8 @@ interface ShimCallback {
 
     fun onCharacteristicRead(connId: ConnectionId, charId: HpyCharId, value: ByteArray)
 
+    fun onCharacteristicReadFailed(connId: ConnectionId, charId: HpyCharId)
+
     fun onCharacteristicChanged(connId: ConnectionId, charId: HpyCharId, value: ByteArray)
 
     fun onWriteComplete(connId: ConnectionId, charId: HpyCharId, status: Int)

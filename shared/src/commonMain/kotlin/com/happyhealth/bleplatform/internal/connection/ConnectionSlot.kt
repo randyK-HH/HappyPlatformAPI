@@ -57,6 +57,8 @@ class ConnectionSlot(
     private var downloadEnabled: Boolean = false
     private var downloadPendingStatusPoll: Boolean = false
     private var downloadFailsafeJob: Job? = null
+    private var l2capConnectTimeoutJob: Job? = null
+    private var downloadStallJob: Job? = null
     private var cumulativeFramesDownloaded: Int = 0
     private var cumulativeFramesTotal: Int = 0
 
@@ -112,6 +114,11 @@ class ConnectionSlot(
         onTimeout = { cmd ->
             log("Command timeout: ${cmd.tag}")
             emitEvent(HpyEvent.Error(connId, HpyErrorCode.COMMAND_TIMEOUT, "Command timeout: ${cmd.tag}"))
+            if (state == HpyConnectionState.HANDSHAKING) {
+                log("Advancing handshake past timed-out step: ${cmd.tag}")
+                val next = handshakeRunner?.onCommandComplete()
+                enqueueHandshakeCommand(next)
+            }
         },
     )
 
@@ -167,6 +174,10 @@ class ConnectionSlot(
         resumeDownloadAfterReconnect = false
         downloadFailsafeJob?.cancel()
         downloadFailsafeJob = null
+        l2capConnectTimeoutJob?.cancel()
+        l2capConnectTimeoutJob = null
+        downloadStallJob?.cancel()
+        downloadStallJob = null
         if (state == HpyConnectionState.DOWNLOADING) {
             downloadController?.let { shim.l2capClose(connId) }
             downloadController = null
@@ -414,6 +425,16 @@ class ConnectionSlot(
         }
     }
 
+    fun onCharacteristicReadFailed(charId: HpyCharId) {
+        log("DIS read failed: $charId (skipping)")
+        if (pendingDisReads.isNotEmpty()) {
+            val next = pendingDisReads.removeFirst()
+            shim.readCharacteristic(connId, next)
+        } else {
+            onAllDisReadsComplete()
+        }
+    }
+
     fun onCharacteristicChanged(charId: HpyCharId, value: ByteArray) {
         when (charId) {
             HpyCharId.CMD_TX -> handleCommandResponse(value)
@@ -557,6 +578,10 @@ class ConnectionSlot(
         downloadPendingStatusPoll = false
         downloadFailsafeJob?.cancel()
         downloadFailsafeJob = null
+        l2capConnectTimeoutJob?.cancel()
+        l2capConnectTimeoutJob = null
+        downloadStallJob?.cancel()
+        downloadStallJob = null
         pendingAutoDownloadStatus = null
         rssiTimeoutJob?.cancel()
         rssiTimeoutJob = null
@@ -903,6 +928,7 @@ class ConnectionSlot(
     private fun handleStreamTxNotification(value: ByteArray) {
         if (state == HpyConnectionState.DOWNLOADING) {
             // STREAM_TX carries GATT frame data during download
+            resetDownloadStallTimer()
             val action = downloadController?.onStreamTxData(value) ?: return
             handleDownloadAction(action)
         } else if (state == HpyConnectionState.HANDSHAKING && memfaultAccumulator != null) {
@@ -915,6 +941,17 @@ class ConnectionSlot(
     }
 
     // ---- Download ----
+
+    private fun resetDownloadStallTimer() {
+        downloadStallJob?.cancel()
+        downloadStallJob = scope.launch {
+            delay(config.downloadStallTimeoutMs)
+            log("Download stall detected: no data received for ${config.downloadStallTimeoutMs / 1000}s")
+            emitEvent(HpyEvent.Error(connId, HpyErrorCode.DOWNLOAD_STALL,
+                "No download data received for ${config.downloadStallTimeoutMs / 1000}s"))
+            stopDownload()
+        }
+    }
 
     private fun beginDownloadSession(status: DeviceStatusData) {
         downloadFailsafeJob?.cancel()
@@ -934,6 +971,7 @@ class ConnectionSlot(
         controller.lastRssi = lastRssi
         downloadEnabled = true
         transition(HpyConnectionState.DOWNLOADING)
+        resetDownloadStallTimer()
 
         // Reconnect sync accounting — only log when positions differ
         preDisconnectSyncFrameCount?.let { prevFc ->
@@ -989,6 +1027,8 @@ class ConnectionSlot(
     }
 
     fun onL2capConnected() {
+        l2capConnectTimeoutJob?.cancel()
+        l2capConnectTimeoutJob = null
         val controller = downloadController ?: return
         log("L2CAP socket connected")
         val action = controller.onL2capConnected()
@@ -996,6 +1036,7 @@ class ConnectionSlot(
     }
 
     fun onL2capFrame(frameData: ByteArray) {
+        resetDownloadStallTimer()
         downloadController?.onFrameData(frameData)
         emitEvent(HpyEvent.DownloadFrame(connId, frameData))
         val controller = downloadController ?: return
@@ -1004,6 +1045,7 @@ class ConnectionSlot(
     }
 
     fun onL2capBatchComplete(framesReceived: Int, crcValid: Boolean) {
+        resetDownloadStallTimer()
         val controller = downloadController ?: return
         log("L2CAP batch complete: $framesReceived frames, CRC valid=$crcValid")
         val action = controller.onL2capBatchComplete(framesReceived, crcValid)
@@ -1011,6 +1053,8 @@ class ConnectionSlot(
     }
 
     fun onL2capError(message: String) {
+        l2capConnectTimeoutJob?.cancel()
+        l2capConnectTimeoutJob = null
         val controller = downloadController ?: return
         log("L2CAP error: $message")
         val action = controller.onL2capError(message)
@@ -1020,11 +1064,21 @@ class ConnectionSlot(
     private fun handleDownloadAction(action: DownloadAction) {
         when (action) {
             is DownloadAction.EnqueueCommand -> commandQueue.enqueue(action.cmd)
-            is DownloadAction.OpenL2cap -> shim.l2capOpen(connId, action.psm)
+            is DownloadAction.OpenL2cap -> {
+                shim.l2capOpen(connId, action.psm)
+                l2capConnectTimeoutJob?.cancel()
+                l2capConnectTimeoutJob = scope.launch {
+                    delay(config.l2capConnectTimeoutMs)
+                    log("L2CAP connect timeout (${config.l2capConnectTimeoutMs}ms) — falling back to GATT")
+                    onL2capError("L2CAP connect timeout")
+                }
+            }
             is DownloadAction.StartL2capReceive -> shim.l2capStartReceiving(connId, action.expectedFrames)
             is DownloadAction.CloseL2cap -> shim.l2capClose(connId)
             is DownloadAction.EmitEvent -> emitEvent(action.event)
             is DownloadAction.SessionComplete -> {
+                downloadStallJob?.cancel()
+                downloadStallJob = null
                 downloadController?.let { ctrl ->
                     cumulativeFramesDownloaded += ctrl.sessionFramesDownloaded
                     cumulativeFramesTotal += ctrl.sessionFramesToDownload

@@ -807,6 +807,10 @@ class ConnectionSlot(
                 }
                 val crcStr = if (crcValid) "OK" else "MISMATCH"
                 log("HS: READ_FILE (Memfault) $dataLen bytes, CRC $crcStr")
+                if (!crcValid) {
+                    emitEvent(HpyEvent.Error(connId, HpyErrorCode.GENERIC,
+                        "Memfault chunk CRC mismatch ($dataLen bytes)"))
+                }
 
                 // Write to persistent circular buffer
                 if (data != null && dataLen > 0) {
@@ -858,7 +862,9 @@ class ConnectionSlot(
         memfaultAccumulator = null
         memfaultAccumulatorPos = 0
         if (chunksThisDrain > 0 || memfaultBuffer.getChunks().isNotEmpty()) {
-            log("Memfault drain complete: $chunksThisDrain new chunks, ${memfaultBuffer.getChunks().size} total in buffer")
+            val badCrcCount = memfaultBuffer.getChunks().count { !it.crcValid }
+            log("Memfault drain complete: $chunksThisDrain new chunks, ${memfaultBuffer.getChunks().size} total in buffer" +
+                if (badCrcCount > 0) ", $badCrcCount with bad CRC" else "")
             emitEvent(HpyEvent.MemfaultComplete(connId, chunksThisDrain))
         }
         if (wasFwUpdateRebooting) {

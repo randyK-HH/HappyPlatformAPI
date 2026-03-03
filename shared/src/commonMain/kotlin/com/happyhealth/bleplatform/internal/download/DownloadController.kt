@@ -148,7 +148,11 @@ internal class DownloadController(
         if (!crcValid && batchRetryCount < maxRetries) {
             batchRetryCount++
             contiguityTracker.restoreCheckpoint()
-            return requestNextL2capBatch()
+            return DownloadAction.Multiple(listOf(
+                DownloadAction.EmitEvent(HpyEvent.Log(connId,
+                    "Batch CRC failed (L2CAP) — retry $batchRetryCount/$maxRetries, fc=$syncFrameCount, expected=$batchFramesExpected frames")),
+                requestNextL2capBatch(),
+            ))
         }
 
         val anomalies = contiguityTracker.commitBatch()
@@ -207,7 +211,12 @@ internal class DownloadController(
     fun onL2capError(message: String): DownloadAction {
         // Fall back to GATT for remaining frames
         usingL2cap = false
-        return startGattPath()
+        val remaining = totalFramesToDownload - totalFramesDownloaded
+        return DownloadAction.Multiple(listOf(
+            DownloadAction.EmitEvent(HpyEvent.Log(connId,
+                "L2CAP fallback to GATT: $message ($remaining frames remaining)")),
+            startGattPath(),
+        ))
     }
 
     fun onStreamTxData(data: ByteArray): DownloadAction {
@@ -230,7 +239,11 @@ internal class DownloadController(
         if (!crcValid && batchRetryCount < maxRetries) {
             batchRetryCount++
             contiguityTracker.restoreCheckpoint()
-            return requestNextGattBatch()
+            return DownloadAction.Multiple(listOf(
+                DownloadAction.EmitEvent(HpyEvent.Log(connId,
+                    "Batch CRC failed (GATT) — retry $batchRetryCount/$maxRetries, fc=$syncFrameCount, expected=$batchFramesExpected frames")),
+                requestNextGattBatch(),
+            ))
         }
 
         val anomalies = contiguityTracker.commitBatch()
@@ -287,7 +300,12 @@ internal class DownloadController(
         val resp = ResponseParser.parseConfigureL2capResponse(value)
         if (resp == null || resp.status != 0) {
             // L2CAP configuration failed, fall back to GATT
-            return startGattPath()
+            val statusStr = resp?.status?.toString() ?: "null"
+            return DownloadAction.Multiple(listOf(
+                DownloadAction.EmitEvent(HpyEvent.Log(connId,
+                    "L2CAP config rejected (status=$statusStr) — falling back to GATT")),
+                startGattPath(),
+            ))
         }
         phase = DownloadPhase.WAITING_L2CAP_SOCKET
         return DownloadAction.OpenL2cap(L2CAP_PSM)

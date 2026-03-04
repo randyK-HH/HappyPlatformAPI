@@ -334,7 +334,7 @@ internal class DownloadController(
         return DownloadAction.Multiple(listOf(
             DownloadAction.StartL2capReceive(batchFramesExpected),
             DownloadAction.EnqueueCommand(QueuedCommand(
-                tag = "DL_GET_FRAMES_L2CAP",
+                tag = "DL_GET_FRAMES_L2CAP (sync=boot${syncFrameReboots}:frame${syncFrameCount}, lim=$batchFramesExpected)",
                 charId = HpyCharId.CMD_RX,
                 data = CommandBuilder.buildGetFramesL2cap(syncFrameCount, syncFrameReboots, batchFramesExpected),
                 timeoutMs = 5000L,
@@ -397,7 +397,7 @@ internal class DownloadController(
         // would prematurely signal command completion.
         phase = DownloadPhase.RECEIVING_GATT
         return DownloadAction.EnqueueCommand(QueuedCommand(
-            tag = "DL_GET_FRAMES_GATT",
+            tag = "DL_GET_FRAMES_GATT (sync=boot${syncFrameReboots}:frame${syncFrameCount}, lim=$batchFramesExpected)",
             charId = HpyCharId.CMD_RX,
             data = CommandBuilder.buildGetFramesGatt(syncFrameCount, syncFrameReboots, batchFramesExpected),
             timeoutMs = 30000L,

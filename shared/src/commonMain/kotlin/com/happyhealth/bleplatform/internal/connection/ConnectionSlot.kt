@@ -796,6 +796,10 @@ class ConnectionSlot(
                 enqueueHandshakeCommand(next)
             }
             CommandId.GET_FILE_LENGTH -> {
+                // Guard against duplicate Android BLE callbacks: if an accumulator
+                // is already allocated, a READ_FILE is pending — skip the duplicate.
+                if (memfaultAccumulator != null) return
+
                 val length = ResponseParser.parseGetFileLengthResponse(value)
                 log("HS: GET_FILE_LENGTH (Memfault) length=$length")
                 val next = runner.onMemfaultFileLengthReceived(length)
@@ -813,6 +817,10 @@ class ConnectionSlot(
                 enqueueHandshakeCommand(next)
             }
             CommandId.READ_FILE -> {
+                // Guard against duplicate Android BLE callbacks: if the accumulator
+                // was already consumed, this is a duplicate CRC response — skip it.
+                if (memfaultAccumulator == null) return
+
                 val ringCrc = ResponseParser.parseReadFileCrcResponse(value)
                 val data = memfaultAccumulator
                 val dataLen = memfaultAccumulatorPos

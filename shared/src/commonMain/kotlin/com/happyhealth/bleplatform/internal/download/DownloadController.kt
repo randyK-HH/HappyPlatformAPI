@@ -156,10 +156,12 @@ internal class DownloadController(
             ))
         }
 
-        val anomalies = contiguityTracker.commitBatch()
+        val batchResult = contiguityTracker.commitBatch()
         val retries = batchRetryCount
         totalFramesDownloaded += framesReceived
-        syncFrameCount += framesReceived.toUInt()
+        // Use actual position from frame headers instead of blind arithmetic
+        syncFrameCount = batchResult.lastFrameCount
+        syncFrameReboots = batchResult.lastReboots
         batchRetryCount = 0
 
         val crcFailEvent = if (!crcValid) {
@@ -167,7 +169,19 @@ internal class DownloadController(
                 "Batch accepted with bad CRC after $retries retries ($framesReceived frames at fc=$syncFrameCount, L2CAP)")))
         } else emptyList()
 
-        val anomalyActions = anomalies.map { a ->
+        val rebootActions = batchResult.reboots.flatMap { reboot ->
+            val actions = mutableListOf<DownloadAction>(
+                DownloadAction.EmitEvent(HpyEvent.Log(connId,
+                    "Reboot detected. [rb=${reboot.newReboots}, fc=${reboot.firstFrameCount}]"))
+            )
+            if (reboot.firstFrameCount != 1u) {
+                actions.add(DownloadAction.EmitEvent(HpyEvent.Error(connId, HpyErrorCode.NCF,
+                    "First frame after reboot has fc=${reboot.firstFrameCount} (expected 1), rb=${reboot.newReboots}")))
+            }
+            actions
+        }
+
+        val anomalyActions = batchResult.anomalies.map { a ->
             DownloadAction.EmitEvent(HpyEvent.Log(connId,
                 "NCF: frame[${a.frameIndex}] expected fc=${a.expectedCount} rb=${a.expectedReboots}, " +
                 "got fc=${a.actualCount} rb=${a.actualReboots}"))
@@ -178,7 +192,7 @@ internal class DownloadController(
                 transport = transportString,
                 rssi = lastRssi,
                 retryCount = retries,
-                ncfCount = anomalies.size)
+                ncfCount = batchResult.anomalies.size)
         )
         val progressEvent = DownloadAction.EmitEvent(
             HpyEvent.DownloadProgress(connId, cumulativeFramesOffset + totalFramesDownloaded, cumulativeTotalOffset + totalFramesToDownload, transportString,
@@ -188,13 +202,13 @@ internal class DownloadController(
         val remaining = totalFramesToDownload - totalFramesDownloaded
         return if (remaining <= 0) {
             phase = DownloadPhase.CONFIGURE_L2CAP_CLOSE
-            DownloadAction.Multiple(crcFailEvent + anomalyActions + listOf(
+            DownloadAction.Multiple(crcFailEvent + rebootActions + anomalyActions + listOf(
                 batchEvent,
                 progressEvent,
                 closeL2capCommand(),
             ))
         } else {
-            DownloadAction.Multiple(crcFailEvent + anomalyActions + listOf(
+            DownloadAction.Multiple(crcFailEvent + rebootActions + anomalyActions + listOf(
                 batchEvent,
                 progressEvent,
                 requestNextL2capBatch(),
@@ -252,10 +266,12 @@ internal class DownloadController(
             ))
         }
 
-        val anomalies = contiguityTracker.commitBatch()
+        val batchResult = contiguityTracker.commitBatch()
         val retries = batchRetryCount
         totalFramesDownloaded += framesReceived
-        syncFrameCount += framesReceived.toUInt()
+        // Use actual position from frame headers instead of blind arithmetic
+        syncFrameCount = batchResult.lastFrameCount
+        syncFrameReboots = batchResult.lastReboots
         batchRetryCount = 0
 
         val crcFailEvent = if (!crcValid) {
@@ -263,7 +279,19 @@ internal class DownloadController(
                 "Batch accepted with bad CRC after $retries retries ($framesReceived frames at fc=$syncFrameCount, GATT)")))
         } else emptyList()
 
-        val anomalyActions = anomalies.map { a ->
+        val rebootActions = batchResult.reboots.flatMap { reboot ->
+            val actions = mutableListOf<DownloadAction>(
+                DownloadAction.EmitEvent(HpyEvent.Log(connId,
+                    "Reboot detected. [rb=${reboot.newReboots}, fc=${reboot.firstFrameCount}]"))
+            )
+            if (reboot.firstFrameCount != 1u) {
+                actions.add(DownloadAction.EmitEvent(HpyEvent.Error(connId, HpyErrorCode.NCF,
+                    "First frame after reboot has fc=${reboot.firstFrameCount} (expected 1), rb=${reboot.newReboots}")))
+            }
+            actions
+        }
+
+        val anomalyActions = batchResult.anomalies.map { a ->
             DownloadAction.EmitEvent(HpyEvent.Log(connId,
                 "NCF: frame[${a.frameIndex}] expected fc=${a.expectedCount} rb=${a.expectedReboots}, " +
                 "got fc=${a.actualCount} rb=${a.actualReboots}"))
@@ -274,7 +302,7 @@ internal class DownloadController(
                 transport = transportString,
                 rssi = lastRssi,
                 retryCount = retries,
-                ncfCount = anomalies.size)
+                ncfCount = batchResult.anomalies.size)
         )
         val progressEvent = DownloadAction.EmitEvent(
             HpyEvent.DownloadProgress(connId, cumulativeFramesOffset + totalFramesDownloaded, cumulativeTotalOffset + totalFramesToDownload, transportString,
@@ -283,9 +311,9 @@ internal class DownloadController(
 
         val remaining = totalFramesToDownload - totalFramesDownloaded
         return if (remaining <= 0) {
-            finishSession(crcFailEvent + anomalyActions + listOf(batchEvent, progressEvent))
+            finishSession(crcFailEvent + rebootActions + anomalyActions + listOf(batchEvent, progressEvent))
         } else {
-            DownloadAction.Multiple(crcFailEvent + anomalyActions + listOf(
+            DownloadAction.Multiple(crcFailEvent + rebootActions + anomalyActions + listOf(
                 batchEvent,
                 progressEvent,
                 requestNextGattBatch(),

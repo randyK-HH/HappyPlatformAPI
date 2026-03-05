@@ -10,12 +10,26 @@ internal data class FrameAnomaly(
     val actualReboots: UInt,
 )
 
+internal data class RebootEvent(
+    val frameIndex: Int,        // index within batch
+    val newReboots: UInt,       // rb value after reboot
+    val firstFrameCount: UInt,  // fc of first frame after reboot (should be 1)
+)
+
+internal data class BatchResult(
+    val anomalies: List<FrameAnomaly>,
+    val reboots: List<RebootEvent>,
+    val lastFrameCount: UInt,   // fc of last frame in batch
+    val lastReboots: UInt,      // rb of last frame in batch
+)
+
 internal class FrameContiguityTracker {
     private var expectedFrameCount: UInt = 0u
     private var expectedReboots: UInt = 0u
     private var checkpointFrameCount: UInt = 0u
     private var checkpointReboots: UInt = 0u
     private val batchAnomalies = mutableListOf<FrameAnomaly>()
+    private val batchReboots = mutableListOf<RebootEvent>()
     private var batchFrameIndex: Int = 0
 
     fun setBaseline(syncFrameCount: UInt, syncFrameReboots: UInt) {
@@ -28,6 +42,7 @@ internal class FrameContiguityTracker {
         checkpointFrameCount = expectedFrameCount
         checkpointReboots = expectedReboots
         batchAnomalies.clear()
+        batchReboots.clear()
         batchFrameIndex = 0
     }
 
@@ -35,6 +50,7 @@ internal class FrameContiguityTracker {
         expectedFrameCount = checkpointFrameCount
         expectedReboots = checkpointReboots
         batchAnomalies.clear()
+        batchReboots.clear()
         batchFrameIndex = 0
     }
 
@@ -43,6 +59,11 @@ internal class FrameContiguityTracker {
 
         val actualCount = readUInt32(frameData, 29)
         val actualReboots = readUInt32(frameData, 37)
+
+        // Track reboot event (separate from anomaly detection)
+        if (actualReboots != expectedReboots) {
+            batchReboots.add(RebootEvent(batchFrameIndex, actualReboots, actualCount))
+        }
 
         val isAnomaly = when {
             actualReboots == expectedReboots ->
@@ -71,9 +92,15 @@ internal class FrameContiguityTracker {
         batchFrameIndex++
     }
 
-    fun commitBatch(): List<FrameAnomaly> {
-        val result = batchAnomalies.toList()
+    fun commitBatch(): BatchResult {
+        val result = BatchResult(
+            anomalies = batchAnomalies.toList(),
+            reboots = batchReboots.toList(),
+            lastFrameCount = expectedFrameCount - 1u,  // fc of last frame seen
+            lastReboots = expectedReboots,
+        )
         batchAnomalies.clear()
+        batchReboots.clear()
         batchFrameIndex = 0
         return result
     }

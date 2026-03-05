@@ -62,6 +62,7 @@ class ConnectionSlot(
     private var downloadStallJob: Job? = null
     private var cumulativeFramesDownloaded: Int = 0
     private var cumulativeFramesTotal: Int = 0
+    private var lastDownloadStartTime: Long = 0L  // UTC seconds from timeSource
 
     // RSSI pre-check for auto-download
     private var pendingAutoDownloadStatus: DeviceStatusData? = null
@@ -893,8 +894,16 @@ class ConnectionSlot(
         }
         if (resumeDownloadAfterReconnect) {
             resumeDownloadAfterReconnect = false
-            log("Resuming download after reconnection")
-            startDownload()
+            val elapsedMs = (timeSource.getUtcTimeSeconds() - lastDownloadStartTime) * 1000
+            if (elapsedMs < config.downloadCooldownMs) {
+                val minutesAgo = elapsedMs / 60000
+                log("Skipping download resume — last download was ${minutesAgo}m ago (< ${config.downloadCooldownMs / 60000}m cooldown)")
+                transition(HpyConnectionState.WAITING)
+                startDownloadFailsafeTimer()
+            } else {
+                log("Resuming download after reconnection")
+                startDownload()
+            }
         }
     }
 
@@ -967,10 +976,23 @@ class ConnectionSlot(
         downloadStallJob?.cancel()
         downloadStallJob = scope.launch {
             delay(config.downloadStallTimeoutMs)
-            log("Download stall detected: no data received for ${config.downloadStallTimeoutMs / 1000}s")
+            val rssiStr = lastRssi?.let { ", RSSI=$it" } ?: ""
+            log("Download stall detected: no data received for ${config.downloadStallTimeoutMs / 1000}s$rssiStr")
             emitEvent(HpyEvent.Error(connId, HpyErrorCode.DOWNLOAD_STALL,
-                "No download data received for ${config.downloadStallTimeoutMs / 1000}s"))
-            stopDownload()
+                "No download data received for ${config.downloadStallTimeoutMs / 1000}s$rssiStr"))
+            // Clean up this download session but keep the cycle alive.
+            // stopDownload() would set downloadEnabled=false, permanently
+            // breaking the auto-download cycle. Instead, transition to WAITING
+            // so SuperframeClose / failsafe timer trigger the next attempt.
+            downloadController?.let { shim.l2capClose(connId) }
+            downloadController = null
+            downloadStallJob = null
+            l2capConnectTimeoutJob?.cancel()
+            l2capConnectTimeoutJob = null
+            commandQueue.flush()
+            log("Download session aborted by stall -> WAITING")
+            transition(HpyConnectionState.WAITING)
+            startDownloadFailsafeTimer()
         }
     }
 
@@ -991,6 +1013,7 @@ class ConnectionSlot(
         downloadController = controller
         controller.lastRssi = lastRssi
         downloadEnabled = true
+        lastDownloadStartTime = timeSource.getUtcTimeSeconds()
         transition(HpyConnectionState.DOWNLOADING)
         resetDownloadStallTimer()
 
@@ -1121,6 +1144,10 @@ class ConnectionSlot(
 
     private fun sendCommand(cmd: QueuedCommand) {
         log("TX ${cmd.tag} [${cmd.data.size}b]")
+        if (cmd.tag.startsWith("DL_GET_FRAMES")) {
+            val rssiStr = lastRssi?.let { "$it dBm" } ?: "unknown"
+            log("RSSI: $rssiStr")
+        }
         shim.writeCharacteristic(connId, cmd.charId, cmd.data, WriteType.WITHOUT_RESPONSE)
         commandQueue.startTimeoutTimer(scope)
     }

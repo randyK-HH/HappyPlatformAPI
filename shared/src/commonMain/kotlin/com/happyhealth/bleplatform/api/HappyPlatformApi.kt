@@ -185,8 +185,8 @@ fun createHappyPlatformApi(
     shim: PlatformBleShim,
     timeSource: PlatformTimeSource,
     config: HpyConfig = HpyConfig(),
+    scope: CoroutineScope = CoroutineScope(SupervisorJob()),
 ): HappyPlatformApi {
-    val scope = CoroutineScope(SupervisorJob())
     val connConfig = ConnectionConfig(
         commandTimeoutMs = config.commandTimeoutMs,
         skipFingerDetection = config.skipFingerDetection,

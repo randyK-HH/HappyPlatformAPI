@@ -35,4 +35,5 @@ data class ConnectionConfig(
     val fwStreamInterBlockDelayMs: Long = 30L,
     val fwStreamDrainDelayMs: Long = 2000L,
     val minRssi: Int = -80,
+    val downloadCooldownMs: Long = 20L * 60 * 1000,  // 20 minutes
 )

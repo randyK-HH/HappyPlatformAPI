@@ -181,6 +181,13 @@ class HappyPlatformApi internal constructor(
     }
 }
 
+/** Overload without [scope] for Apple targets where Kotlin default parameters are not bridged. */
+fun createHappyPlatformApi(
+    shim: PlatformBleShim,
+    timeSource: PlatformTimeSource,
+    config: HpyConfig,
+): HappyPlatformApi = createHappyPlatformApi(shim, timeSource, config, CoroutineScope(SupervisorJob()))
+
 fun createHappyPlatformApi(
     shim: PlatformBleShim,
     timeSource: PlatformTimeSource,

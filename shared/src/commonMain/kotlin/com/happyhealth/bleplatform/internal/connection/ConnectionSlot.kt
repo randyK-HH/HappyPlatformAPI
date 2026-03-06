@@ -317,6 +317,10 @@ class ConnectionSlot(
     fun onDisconnected(status: Int) {
         log("Disconnected (status=$status)")
 
+        // Cancel failsafe timer early to minimize race window — prevents it from
+        // enqueuing a command into a dead connection between now and cleanupOperations()
+        downloadFailsafeJob?.cancel()
+
         // Cancel FW error fallback timer — the disconnect we were waiting for has arrived
         fwErrorFallbackJob?.cancel()
         fwErrorFallbackJob = null

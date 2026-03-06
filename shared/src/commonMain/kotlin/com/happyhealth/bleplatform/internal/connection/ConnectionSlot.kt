@@ -170,6 +170,19 @@ class ConnectionSlot(
         ))
     }
 
+    private fun resumeDownload() {
+        if (state != HpyConnectionState.READY) return
+        downloadEnabled = true
+        downloadPendingStatusPoll = true
+        commandQueue.enqueue(QueuedCommand(
+            tag = "DL_GET_DEV_STATUS",
+            charId = HpyCharId.CMD_RX,
+            data = CommandBuilder.buildGetDeviceStatus(),
+            timeoutMs = config.commandTimeoutMs,
+            completionType = CompletionType.ON_NOTIFICATION,
+        ))
+    }
+
     fun stopDownload() {
         downloadEnabled = false
         downloadPendingStatusPoll = false
@@ -577,6 +590,10 @@ class ConnectionSlot(
         commandQueue.flush()
         handshakeRunner = null
         if (downloadController != null) {
+            downloadController?.let { ctrl ->
+                cumulativeFramesDownloaded += ctrl.sessionFramesDownloaded
+                cumulativeFramesTotal += ctrl.sessionFramesToDownload
+            }
             shim.l2capClose(connId)
             downloadController = null
         }
@@ -914,7 +931,7 @@ class ConnectionSlot(
                 startDownloadFailsafeTimer()
             } else {
                 log("Resuming download after reconnection")
-                startDownload()
+                resumeDownload()
             }
         }
     }
@@ -1156,7 +1173,7 @@ class ConnectionSlot(
 
     private fun sendCommand(cmd: QueuedCommand) {
         log("TX ${cmd.tag} [${cmd.data.size}b]")
-        if (cmd.tag.startsWith("DL_GET_FRAMES")) {
+        if (cmd.tag == "DL_CONFIGURE_L2CAP_OPEN") {
             val rssiStr = lastRssi?.let { "$it dBm" } ?: "unknown"
             log("RSSI: $rssiStr")
         }

@@ -208,7 +208,7 @@ class ConnectionSlot(
     // ---- FW Update ----
 
     fun startFwUpdate(imageBytes: ByteArray) {
-        if (state != HpyConnectionState.READY) return
+        if (state != HpyConnectionState.READY && state != HpyConnectionState.CONNECTED_LIMITED) return
         val controller = FwUpdateController(
             connId, imageBytes, config.fwStreamInterBlockDelayMs, config.fwStreamDrainDelayMs,
         )

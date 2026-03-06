@@ -99,7 +99,7 @@ class HappyPlatformApi internal constructor(
 
     fun startFwUpdate(connId: ConnectionId, imageBytes: ByteArray): HpyResult {
         val slot = manager.getSlot(connId) ?: return HpyResult.ErrInvalidConnId
-        if (slot.state != HpyConnectionState.READY) return HpyResult.ErrCommandRejected
+        if (slot.state != HpyConnectionState.READY && slot.state != HpyConnectionState.CONNECTED_LIMITED) return HpyResult.ErrCommandRejected
         slot.startFwUpdate(imageBytes)
         return HpyResult.Ok
     }

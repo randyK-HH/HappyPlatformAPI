@@ -927,6 +927,7 @@ class ConnectionSlot(
             if (elapsedMs < config.downloadCooldownMs) {
                 val minutesAgo = elapsedMs / 60000
                 log("Skipping download resume — last download was ${minutesAgo}m ago (< ${config.downloadCooldownMs / 60000}m cooldown)")
+                downloadEnabled = true
                 transition(HpyConnectionState.WAITING)
                 startDownloadFailsafeTimer()
             } else {

@@ -202,6 +202,7 @@ fun createHappyPlatformApi(
         downloadMaxRetries = config.downloadMaxRetries,
         preferL2capDownload = config.preferL2capDownload,
         minRssi = config.minRssi,
+        downloadStallTimeoutMs = config.downloadStallTimeoutMs,
     )
     val manager = ConnectionManager(shim, timeSource, scope, connConfig)
     return HappyPlatformApi(manager, scope)

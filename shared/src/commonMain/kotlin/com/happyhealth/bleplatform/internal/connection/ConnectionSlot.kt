@@ -89,6 +89,15 @@ class ConnectionSlot(
     private var preDisconnectSyncFrameCount: UInt? = null
     private var preDisconnectSyncReboots: UInt? = null
 
+    // App's last CRC-validated sync position — used for sync correction after stall
+    private var savedAppSyncFrameCount: UInt? = null
+    private var savedAppSyncReboots: UInt? = null
+    private var syncCorrectionPending: Boolean = false
+
+    // Cross-session NCF detection: last committed sync position
+    private var lastCommittedSyncFrameCount: UInt? = null
+    private var lastCommittedSyncReboots: UInt? = null
+
     // Persists across reconnections — NOT cleared on disconnect
     private val memfaultBuffer = MemfaultBuffer()
 
@@ -138,6 +147,10 @@ class ConnectionSlot(
     fun disconnect() {
         isUserDisconnect = true
         resumeDownloadAfterReconnect = false
+        savedAppSyncFrameCount = null
+        savedAppSyncReboots = null
+        lastCommittedSyncFrameCount = null
+        lastCommittedSyncReboots = null
         fwErrorPendingDisconnect = false
         fwErrorFallbackJob?.cancel()
         fwErrorFallbackJob = null
@@ -161,6 +174,11 @@ class ConnectionSlot(
         downloadPendingStatusPoll = true
         cumulativeFramesDownloaded = 0
         cumulativeFramesTotal = 0
+        lastCommittedSyncFrameCount = null
+        lastCommittedSyncReboots = null
+        savedAppSyncFrameCount = null
+        savedAppSyncReboots = null
+        syncCorrectionPending = false
         commandQueue.enqueue(QueuedCommand(
             tag = "DL_GET_DEV_STATUS",
             charId = HpyCharId.CMD_RX,
@@ -187,6 +205,11 @@ class ConnectionSlot(
         downloadEnabled = false
         downloadPendingStatusPoll = false
         resumeDownloadAfterReconnect = false
+        savedAppSyncFrameCount = null
+        savedAppSyncReboots = null
+        syncCorrectionPending = false
+        lastCommittedSyncFrameCount = null
+        lastCommittedSyncReboots = null
         downloadFailsafeJob?.cancel()
         downloadFailsafeJob = null
         l2capConnectTimeoutJob?.cancel()
@@ -389,6 +412,10 @@ class ConnectionSlot(
             resumeDownloadAfterReconnect = true
             preDisconnectSyncFrameCount = preSyncFc
             preDisconnectSyncReboots = preSyncRb
+            if (preSyncFc != null) {
+                lastCommittedSyncFrameCount = preSyncFc
+                lastCommittedSyncReboots = preSyncRb
+            }
             if (interruptedBatchFrames > 0) {
                 log("Download interrupted: $interruptedBatchFrames partial-batch frames to discard")
                 emitEvent(HpyEvent.DownloadInterrupted(connId, interruptedBatchFrames))
@@ -592,13 +619,14 @@ class ConnectionSlot(
         if (downloadController != null) {
             downloadController?.let { ctrl ->
                 cumulativeFramesDownloaded += ctrl.sessionFramesDownloaded
-                cumulativeFramesTotal += ctrl.sessionFramesToDownload
+                cumulativeFramesTotal += ctrl.sessionFramesDownloaded
             }
             shim.l2capClose(connId)
             downloadController = null
         }
         downloadEnabled = false
         downloadPendingStatusPoll = false
+        syncCorrectionPending = false
         downloadFailsafeJob?.cancel()
         downloadFailsafeJob = null
         l2capConnectTimeoutJob?.cancel()
@@ -764,6 +792,23 @@ class ConnectionSlot(
                 val sf = ResponseParser.parseSyncFrame(value)
                 if (sf != null) {
                     emitEvent(HpyEvent.SyncFrame(connId, sf.frameCount, sf.reboots))
+                }
+            }
+            CommandId.SET_SYNC_FRAME -> {
+                if (syncCorrectionPending) {
+                    syncCorrectionPending = false
+                    log("Sync correction applied — re-polling device status")
+                    // Re-poll to get corrected unsyncedFrames count
+                    downloadPendingStatusPoll = true
+                    commandQueue.enqueue(QueuedCommand(
+                        tag = "DL_GET_DEV_STATUS (post-sync-correction)",
+                        charId = HpyCharId.CMD_RX,
+                        data = CommandBuilder.buildGetDeviceStatus(),
+                        timeoutMs = config.commandTimeoutMs,
+                        completionType = CompletionType.ON_NOTIFICATION,
+                    ))
+                } else {
+                    emitEvent(HpyEvent.CommandResult(connId, cmdByte, value.copyOf()))
                 }
             }
             else -> {
@@ -1014,7 +1059,31 @@ class ConnectionSlot(
             // stopDownload() would set downloadEnabled=false, permanently
             // breaking the auto-download cycle. Instead, transition to WAITING
             // so SuperframeClose / failsafe timer trigger the next attempt.
-            downloadController?.let { shim.l2capClose(connId) }
+            downloadController?.let { ctrl ->
+                // Save last CRC-validated sync position for recovery
+                savedAppSyncFrameCount = ctrl.currentSyncFrameCount
+                savedAppSyncReboots = ctrl.currentSyncReboots
+
+                // Accumulate only CRC-validated frames into cumulative counters.
+                // Use sessionFramesDownloaded (not sessionFramesToDownload) for the
+                // total too — the retry session's unsyncedFrames will account for
+                // the remainder, avoiding inflated progress denominators.
+                cumulativeFramesDownloaded += ctrl.sessionFramesDownloaded
+                cumulativeFramesTotal += ctrl.sessionFramesDownloaded
+
+                // Update last committed sync for cross-session NCF detection
+                lastCommittedSyncFrameCount = ctrl.currentSyncFrameCount
+                lastCommittedSyncReboots = ctrl.currentSyncReboots
+
+                // Discard unvalidated partial-batch frames from FrameWriter
+                val partialFrames = ctrl.batchFramesReceived
+                if (partialFrames > 0) {
+                    log("Stall recovery: $partialFrames partial-batch frames to discard")
+                    emitEvent(HpyEvent.DownloadInterrupted(connId, partialFrames))
+                }
+
+                shim.l2capClose(connId)
+            }
             downloadController = null
             downloadStallJob = null
             l2capConnectTimeoutJob?.cancel()
@@ -1029,6 +1098,59 @@ class ConnectionSlot(
     private fun beginDownloadSession(status: DeviceStatusData) {
         downloadFailsafeJob?.cancel()
         downloadFailsafeJob = null
+
+        // --- Sync correction: detect if ring advanced past app's position ---
+        val appFc = savedAppSyncFrameCount ?: preDisconnectSyncFrameCount
+        val appRb = savedAppSyncReboots ?: preDisconnectSyncReboots
+        if (appFc != null) {
+            val ringFc = status.syncFrameCount
+            val ringRb = status.syncFrameReboots ?: 0u
+            val appRbVal = appRb ?: 0u
+
+            // Rewind if ring advanced past app's position (same boot epoch)
+            // or if a reboot occurred — firmware will serve remaining frames
+            // from the old boot epoch before continuing with the new one.
+            val needsCorrection = if (ringRb == appRbVal) {
+                ringFc > appFc
+            } else {
+                true  // Cross-reboot: rewind to recover tail frames from previous boot
+            }
+
+            if (needsCorrection) {
+                val detail = if (ringRb == appRbVal) {
+                    "gap=${ringFc - appFc} frames"
+                } else {
+                    "cross-reboot recovery"
+                }
+                log("Sync correction: ring at (fc=$ringFc, rb=$ringRb) but app at (fc=$appFc, rb=$appRbVal) — rewinding ring ($detail)")
+                // Send SET_SYNC_FRAME to rewind ring to app's position
+                // Then re-poll device status to get corrected unsyncedFrames count
+                savedAppSyncFrameCount = null
+                savedAppSyncReboots = null
+                preDisconnectSyncFrameCount = null
+                preDisconnectSyncReboots = null
+                syncCorrectionPending = true
+                commandQueue.enqueue(QueuedCommand(
+                    tag = "DL_SET_SYNC_FRAME (rewind fc=$appFc, rb=$appRbVal)",
+                    charId = HpyCharId.CMD_RX,
+                    data = CommandBuilder.buildSetSyncFrame(appFc, appRbVal),
+                    timeoutMs = config.commandTimeoutMs,
+                    completionType = CompletionType.ON_NOTIFICATION,
+                ))
+                return  // Wait for SET_SYNC_FRAME response, then re-poll status
+            }
+        }
+
+        // Clear saved positions — not needed after this point
+        savedAppSyncFrameCount = null
+        savedAppSyncReboots = null
+        preDisconnectSyncFrameCount = null
+        preDisconnectSyncReboots = null
+
+        startDownloadSessionWithStatus(status)
+    }
+
+    private fun startDownloadSessionWithStatus(status: DeviceStatusData) {
         log("L2CAP check: fw='${deviceInfo.fwVersion}', supportsL2cap=${deviceInfo.supportsL2capDownload}, preferL2cap=${config.preferL2capDownload}")
         val useL2cap = deviceInfo.supportsL2capDownload && config.preferL2capDownload
         val controller = DownloadController(
@@ -1039,6 +1161,8 @@ class ConnectionSlot(
             cumulativeFramesOffset = cumulativeFramesDownloaded,
             cumulativeTotalOffset = cumulativeFramesTotal,
             onFrameEmit = { frameData -> emitEvent(HpyEvent.DownloadFrame(connId, frameData)) },
+            previousSyncFrameCount = lastCommittedSyncFrameCount,
+            previousSyncReboots = lastCommittedSyncReboots,
         )
         downloadController = controller
         controller.lastRssi = lastRssi
@@ -1046,18 +1170,6 @@ class ConnectionSlot(
         lastDownloadStartTime = timeSource.getUtcTimeSeconds()
         transition(HpyConnectionState.DOWNLOADING)
         resetDownloadStallTimer()
-
-        // Reconnect sync accounting — only log when positions differ
-        preDisconnectSyncFrameCount?.let { prevFc ->
-            val prevRb = preDisconnectSyncReboots ?: 0u
-            val postFc = status.syncFrameCount
-            val postRb = status.syncFrameReboots
-            if (prevFc != postFc || prevRb != postRb) {
-                log("Reconnect sync audit: pre=(fc=$prevFc, rb=$prevRb) post=(fc=$postFc, rb=$postRb)")
-            }
-            preDisconnectSyncFrameCount = null
-            preDisconnectSyncReboots = null
-        }
 
         log("Download starting: ${status.unsyncedFrames} frames, transport=${if (useL2cap) "L2CAP" else "GATT"}")
 
@@ -1156,6 +1268,8 @@ class ConnectionSlot(
                 downloadController?.let { ctrl ->
                     cumulativeFramesDownloaded += ctrl.sessionFramesDownloaded
                     cumulativeFramesTotal += ctrl.sessionFramesToDownload
+                    lastCommittedSyncFrameCount = ctrl.currentSyncFrameCount
+                    lastCommittedSyncReboots = ctrl.currentSyncReboots
                 }
                 downloadController = null
                 if (downloadEnabled) {

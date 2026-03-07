@@ -8,4 +8,5 @@ data class HpyConfig(
     val downloadMaxRetries: Int = 1,
     val preferL2capDownload: Boolean = true,
     val minRssi: Int = -80,
+    val downloadStallTimeoutMs: Long = 60_000L,
 )

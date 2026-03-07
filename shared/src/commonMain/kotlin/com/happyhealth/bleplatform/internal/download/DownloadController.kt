@@ -50,6 +50,8 @@ internal class DownloadController(
     private val cumulativeFramesOffset: Int = 0,
     private val cumulativeTotalOffset: Int = 0,
     private val onFrameEmit: ((ByteArray) -> Unit)? = null,
+    private val previousSyncFrameCount: UInt? = null,
+    private val previousSyncReboots: UInt? = null,
 ) {
     var phase: DownloadPhase = DownloadPhase.IDLE
         private set
@@ -77,6 +79,7 @@ internal class DownloadController(
     var lastRssi: Int? = null
 
     private var gattAccumulator: GattFrameAccumulator? = null
+    private var crossSessionNcfAction: DownloadAction? = null
 
     fun startSession(
         syncFrameCount: UInt,
@@ -88,20 +91,45 @@ internal class DownloadController(
         this.totalFramesToDownload = unsyncedFrames
         this.totalFramesDownloaded = 0
         this.batchRetryCount = 0
+
+        // Cross-session contiguity check: compare previous session's end
+        // with this session's start. If there's a gap, emit NCF event.
+        if (previousSyncFrameCount != null) {
+            val prevRb = previousSyncReboots ?: 0u
+            if (prevRb == syncFrameReboots && previousSyncFrameCount != syncFrameCount) {
+                val gap = if (syncFrameCount > previousSyncFrameCount) {
+                    (syncFrameCount - previousSyncFrameCount).toInt()
+                } else 0
+                crossSessionNcfAction = DownloadAction.EmitEvent(HpyEvent.Error(connId, HpyErrorCode.NCF,
+                    "Cross-session NCF: previous session ended at fc=$previousSyncFrameCount, " +
+                    "new session starts at fc=$syncFrameCount (gap=$gap frames, rb=$syncFrameReboots)"))
+            }
+        }
+
         contiguityTracker.setBaseline(syncFrameCount, syncFrameReboots)
+
+        // Drain the cross-session NCF action (if any) so it's emitted once
+        val ncfAction = crossSessionNcfAction
+        crossSessionNcfAction = null
 
         if (unsyncedFrames <= 0) {
             phase = DownloadPhase.DONE
-            return DownloadAction.Multiple(listOf(
+            val actions = listOfNotNull(ncfAction) + listOf(
                 DownloadAction.EmitEvent(HpyEvent.DownloadComplete(connId, cumulativeFramesOffset, sessionFrames = 0)),
                 DownloadAction.SessionComplete,
-            ))
+            )
+            return DownloadAction.Multiple(actions)
         }
 
-        return if (supportsL2cap) {
+        val downloadAction = if (supportsL2cap) {
             startL2capPath()
         } else {
             startGattPath()
+        }
+        return if (ncfAction != null) {
+            DownloadAction.Multiple(listOf(ncfAction, downloadAction))
+        } else {
+            downloadAction
         }
     }
 

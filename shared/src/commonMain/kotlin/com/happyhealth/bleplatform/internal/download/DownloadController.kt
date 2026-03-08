@@ -200,7 +200,7 @@ internal class DownloadController(
         val rebootActions = batchResult.reboots.flatMap { reboot ->
             val actions = mutableListOf<DownloadAction>(
                 DownloadAction.EmitEvent(HpyEvent.Log(connId,
-                    "Reboot detected. [rb=${reboot.newReboots}, fc=${reboot.firstFrameCount}]"))
+                    "Reboot detected (rb:${reboot.oldReboots}->${reboot.newReboots}). [fc=${reboot.firstFrameCount}]"))
             )
             if (reboot.firstFrameCount != 1u) {
                 actions.add(DownloadAction.EmitEvent(HpyEvent.Error(connId, HpyErrorCode.NCF,
@@ -224,7 +224,8 @@ internal class DownloadController(
         )
         val progressEvent = DownloadAction.EmitEvent(
             HpyEvent.DownloadProgress(connId, cumulativeFramesOffset + totalFramesDownloaded, cumulativeTotalOffset + totalFramesToDownload, transportString,
-                sessionFramesDownloaded = totalFramesDownloaded, sessionFramesTotal = totalFramesToDownload)
+                sessionFramesDownloaded = totalFramesDownloaded, sessionFramesTotal = totalFramesToDownload,
+                currentFc = batchResult.lastFrameCount.toInt())
         )
 
         val remaining = totalFramesToDownload - totalFramesDownloaded
@@ -252,6 +253,7 @@ internal class DownloadController(
                 cumulativeTotalOffset + totalFramesToDownload, transportString,
                 sessionFramesDownloaded = totalFramesDownloaded + batchFramesReceived,
                 sessionFramesTotal = totalFramesToDownload,
+                currentFc = contiguityTracker.lastFrameCount.toInt(),
             )
         )
     }
@@ -310,7 +312,7 @@ internal class DownloadController(
         val rebootActions = batchResult.reboots.flatMap { reboot ->
             val actions = mutableListOf<DownloadAction>(
                 DownloadAction.EmitEvent(HpyEvent.Log(connId,
-                    "Reboot detected. [rb=${reboot.newReboots}, fc=${reboot.firstFrameCount}]"))
+                    "Reboot detected (rb:${reboot.oldReboots}->${reboot.newReboots}). [fc=${reboot.firstFrameCount}]"))
             )
             if (reboot.firstFrameCount != 1u) {
                 actions.add(DownloadAction.EmitEvent(HpyEvent.Error(connId, HpyErrorCode.NCF,
@@ -334,7 +336,8 @@ internal class DownloadController(
         )
         val progressEvent = DownloadAction.EmitEvent(
             HpyEvent.DownloadProgress(connId, cumulativeFramesOffset + totalFramesDownloaded, cumulativeTotalOffset + totalFramesToDownload, transportString,
-                sessionFramesDownloaded = totalFramesDownloaded, sessionFramesTotal = totalFramesToDownload)
+                sessionFramesDownloaded = totalFramesDownloaded, sessionFramesTotal = totalFramesToDownload,
+                currentFc = batchResult.lastFrameCount.toInt())
         )
 
         val remaining = totalFramesToDownload - totalFramesDownloaded

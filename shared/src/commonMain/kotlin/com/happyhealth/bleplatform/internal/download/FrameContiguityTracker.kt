@@ -12,6 +12,7 @@ internal data class FrameAnomaly(
 
 internal data class RebootEvent(
     val frameIndex: Int,        // index within batch
+    val oldReboots: UInt,       // rb value before reboot
     val newReboots: UInt,       // rb value after reboot
     val firstFrameCount: UInt,  // fc of first frame after reboot (should be 1)
 )
@@ -26,6 +27,7 @@ internal data class BatchResult(
 internal class FrameContiguityTracker {
     private var expectedFrameCount: UInt = 0u
     private var expectedReboots: UInt = 0u
+    val lastFrameCount: UInt get() = if (expectedFrameCount > 0u) expectedFrameCount - 1u else 0u
     private var checkpointFrameCount: UInt = 0u
     private var checkpointReboots: UInt = 0u
     private val batchAnomalies = mutableListOf<FrameAnomaly>()
@@ -62,7 +64,7 @@ internal class FrameContiguityTracker {
 
         // Track reboot event (separate from anomaly detection)
         if (actualReboots != expectedReboots) {
-            batchReboots.add(RebootEvent(batchFrameIndex, actualReboots, actualCount))
+            batchReboots.add(RebootEvent(batchFrameIndex, expectedReboots, actualReboots, actualCount))
         }
 
         val isAnomaly = when {

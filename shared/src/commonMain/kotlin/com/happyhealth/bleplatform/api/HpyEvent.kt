@@ -91,6 +91,7 @@ sealed class HpyEvent {
         val transport: String = "",
         val sessionFramesDownloaded: Int = 0,
         val sessionFramesTotal: Int = 0,
+        val currentFc: Int = 0,
     ) : HpyEvent()
 
     data class DownloadFrame(

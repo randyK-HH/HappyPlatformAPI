@@ -410,9 +410,12 @@ class ConnectionSlot(
         // 5. Unexpected disconnect — start normal reconnection
         if (wasDownloading) {
             resumeDownloadAfterReconnect = true
-            preDisconnectSyncFrameCount = preSyncFc
-            preDisconnectSyncReboots = preSyncRb
+            // Only update sync position if we had an active controller.
+            // A WAITING-state disconnect has preSyncFc=null — don't clobber
+            // the value saved from a previous DOWNLOADING-state disconnect.
             if (preSyncFc != null) {
+                preDisconnectSyncFrameCount = preSyncFc
+                preDisconnectSyncReboots = preSyncRb
                 lastCommittedSyncFrameCount = preSyncFc
                 lastCommittedSyncReboots = preSyncRb
             }
@@ -1223,10 +1226,12 @@ class ConnectionSlot(
 
     fun onL2capFrame(frameData: ByteArray) {
         resetDownloadStallTimer()
-        downloadController?.onFrameData(frameData)
-        emitEvent(HpyEvent.DownloadFrame(connId, frameData))
         val controller = downloadController ?: return
+        controller.onFrameData(frameData)
+        // Increment batchFramesReceived BEFORE emitting the frame to FrameWriter,
+        // so that onDisconnected() captures the correct count if a disconnect races in.
         val action = controller.onFrameReceived()
+        emitEvent(HpyEvent.DownloadFrame(connId, frameData))
         handleDownloadAction(action)
     }
 

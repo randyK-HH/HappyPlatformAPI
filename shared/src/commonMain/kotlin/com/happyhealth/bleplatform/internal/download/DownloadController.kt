@@ -222,24 +222,16 @@ internal class DownloadController(
                 retryCount = retries,
                 ncfCount = batchResult.anomalies.size)
         )
-        val progressEvent = DownloadAction.EmitEvent(
-            HpyEvent.DownloadProgress(connId, cumulativeFramesOffset + totalFramesDownloaded, cumulativeTotalOffset + totalFramesToDownload, transportString,
-                sessionFramesDownloaded = totalFramesDownloaded, sessionFramesTotal = totalFramesToDownload,
-                currentFc = batchResult.lastFrameCount.toInt())
-        )
-
         val remaining = totalFramesToDownload - totalFramesDownloaded
         return if (remaining <= 0) {
             phase = DownloadPhase.CONFIGURE_L2CAP_CLOSE
             DownloadAction.Multiple(crcFailEvent + rebootActions + anomalyActions + listOf(
                 batchEvent,
-                progressEvent,
                 closeL2capCommand(),
             ))
         } else {
             DownloadAction.Multiple(crcFailEvent + rebootActions + anomalyActions + listOf(
                 batchEvent,
-                progressEvent,
                 requestNextL2capBatch(),
             ))
         }
@@ -334,19 +326,12 @@ internal class DownloadController(
                 retryCount = retries,
                 ncfCount = batchResult.anomalies.size)
         )
-        val progressEvent = DownloadAction.EmitEvent(
-            HpyEvent.DownloadProgress(connId, cumulativeFramesOffset + totalFramesDownloaded, cumulativeTotalOffset + totalFramesToDownload, transportString,
-                sessionFramesDownloaded = totalFramesDownloaded, sessionFramesTotal = totalFramesToDownload,
-                currentFc = batchResult.lastFrameCount.toInt())
-        )
-
         val remaining = totalFramesToDownload - totalFramesDownloaded
         return if (remaining <= 0) {
-            finishSession(crcFailEvent + rebootActions + anomalyActions + listOf(batchEvent, progressEvent))
+            finishSession(crcFailEvent + rebootActions + anomalyActions + listOf(batchEvent))
         } else {
             DownloadAction.Multiple(crcFailEvent + rebootActions + anomalyActions + listOf(
                 batchEvent,
-                progressEvent,
                 requestNextGattBatch(),
             ))
         }

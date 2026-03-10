@@ -1054,6 +1054,7 @@ class ConnectionSlot(
         downloadStallJob?.cancel()
         downloadStallJob = scope.launch {
             delay(config.downloadStallTimeoutMs)
+            if (state != HpyConnectionState.DOWNLOADING) return@launch
             val rssiStr = lastRssi?.let { ", RSSI=$it" } ?: ""
             log("Download stall detected: no data received for ${config.downloadStallTimeoutMs / 1000}s$rssiStr")
             emitEvent(HpyEvent.Error(connId, HpyErrorCode.DOWNLOAD_STALL,

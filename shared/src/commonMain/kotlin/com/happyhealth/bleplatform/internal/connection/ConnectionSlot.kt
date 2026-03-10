@@ -36,7 +36,7 @@ class ConnectionSlot(
     val connId: ConnectionId,
     private val shim: PlatformBleShim,
     private val timeSource: PlatformTimeSource,
-    private val config: ConnectionConfig,
+    internal var config: ConnectionConfig,
     private val scope: CoroutineScope,
     private val emitEvent: (HpyEvent) -> Unit,
 ) {
@@ -100,6 +100,7 @@ class ConnectionSlot(
 
     // Persists across reconnections — NOT cleared on disconnect
     private val memfaultBuffer = MemfaultBuffer()
+    private var lastMemfaultDrainTimeMs: Long = 0L
 
     // Transient per-drain accumulator for memfault STREAM_TX data
     private var memfaultAccumulator: ByteArray? = null
@@ -407,7 +408,14 @@ class ConnectionSlot(
             return
         }
 
-        // 5. Unexpected disconnect — start normal reconnection
+        // 5. Auto-reconnect disabled — go straight to DISCONNECTED
+        if (!config.autoReconnect) {
+            log("Auto-reconnect disabled — going to DISCONNECTED")
+            transition(HpyConnectionState.DISCONNECTED)
+            return
+        }
+
+        // 6. Unexpected disconnect — start normal reconnection
         if (wasDownloading) {
             resumeDownloadAfterReconnect = true
             // Only update sync position if we had an active controller.
@@ -536,19 +544,24 @@ class ConnectionSlot(
             return
         }
         reconnectAttempt = 0
+        val unlimited = config.reconnectMaxAttempts == Int.MAX_VALUE
+        val maxLabel = if (unlimited) "Unlimited" else config.reconnectMaxAttempts.toString()
+        val schedule = if (unlimited) config.reconnectSchedule + UNLIMITED_RECONNECT_TIER else config.reconnectSchedule
         transition(HpyConnectionState.RECONNECTING)
         reconnectJob = scope.launch {
-            for (attempt in 1..config.reconnectMaxAttempts) {
+            var attempt = 0
+            while (true) {
+                attempt++
+                if (!unlimited && attempt > config.reconnectMaxAttempts) break
                 reconnectAttempt = attempt
-                val delayMs = config.reconnectSchedule.delayForAttempt(attempt)
+                val delayMs = schedule.delayForAttempt(attempt)
                 delay(delayMs)
                 transition(HpyConnectionState.RECONNECTING, retryCount = attempt)
-                log("Reconnect attempt $attempt/${config.reconnectMaxAttempts}")
+                log("Reconnect attempt $attempt/$maxLabel")
                 connectHandled = false
                 shim.connect(connId, handle)
                 val connected = waitForConnectResult()
                 if (connected) {
-                    // onConnected() has already been called — handshake flow takes over
                     reconnectJob = null
                     reconnectAttempt = 0
                     return@launch
@@ -572,20 +585,25 @@ class ConnectionSlot(
             return
         }
         reconnectAttempt = 0
+        val unlimited = config.reconnectMaxAttempts == Int.MAX_VALUE
+        val maxLabel = if (unlimited) "Unlimited" else config.reconnectMaxAttempts.toString()
+        val schedule = if (unlimited) config.fwReconnectSchedule + UNLIMITED_RECONNECT_TIER else config.fwReconnectSchedule
         reconnectJob = scope.launch {
             log("Waiting ${config.fwRebootWaitMs}ms for ring to reboot...")
             delay(config.fwRebootWaitMs)
-            for (attempt in 1..config.reconnectMaxAttempts) {
+            var attempt = 0
+            while (true) {
+                attempt++
+                if (!unlimited && attempt > config.reconnectMaxAttempts) break
                 reconnectAttempt = attempt
-                val delayMs = config.fwReconnectSchedule.delayForAttempt(attempt)
+                val delayMs = schedule.delayForAttempt(attempt)
                 delay(delayMs)
                 transition(HpyConnectionState.FW_UPDATE_REBOOTING, retryCount = attempt)
-                log("FW reboot reconnect attempt $attempt/${config.reconnectMaxAttempts}")
+                log("FW reboot reconnect attempt $attempt/$maxLabel")
                 connectHandled = false
                 shim.connect(connId, handle)
                 val connected = waitForConnectResult()
                 if (connected) {
-                    // onConnected() has already been called — handshake flow takes over
                     reconnectJob = null
                     reconnectAttempt = 0
                     return@launch
@@ -720,7 +738,14 @@ class ConnectionSlot(
 
         // Start handshake
         transition(HpyConnectionState.HANDSHAKING)
-        handshakeRunner = HandshakeRunner(firmwareTier, config, timeSource)
+        val memfaultEnabled = if (config.memfaultMinIntervalMs > 0L) {
+            val elapsed = timeSource.getUtcTimeSeconds() * 1000 - lastMemfaultDrainTimeMs
+            elapsed >= config.memfaultMinIntervalMs
+        } else true
+        if (!memfaultEnabled) {
+            log("Memfault drain skipped — throttle interval not elapsed (${config.memfaultMinIntervalMs / 60000}min)")
+        }
+        handshakeRunner = HandshakeRunner(firmwareTier, config, timeSource, memfaultEnabled)
         val firstCmd = handshakeRunner!!.start()
         if (firstCmd != null) {
             commandQueue.enqueue(firstCmd)
@@ -951,6 +976,9 @@ class ConnectionSlot(
 
     private fun onHandshakeComplete() {
         val chunksThisDrain = handshakeRunner?.memfaultChunksDownloaded ?: 0
+        if (chunksThisDrain > 0) {
+            lastMemfaultDrainTimeMs = timeSource.getUtcTimeSeconds() * 1000
+        }
         handshakeRunner = null
         memfaultAccumulator = null
         memfaultAccumulatorPos = 0
@@ -1188,9 +1216,9 @@ class ConnectionSlot(
     private fun startDownloadFailsafeTimer() {
         downloadFailsafeJob?.cancel()
         val delayMs = if (firmwareTier == FirmwareTier.TIER_1) {
-            10L * 60 * 1000  // 10 minutes for TIER_1
+            minOf(config.downloadFailsafeIntervalMs, 10L * 60 * 1000)
         } else {
-            21L * 60 * 1000  // 21 minutes for TIER_2
+            config.downloadFailsafeIntervalMs
         }
         downloadFailsafeJob = scope.launch {
             delay(delayMs)

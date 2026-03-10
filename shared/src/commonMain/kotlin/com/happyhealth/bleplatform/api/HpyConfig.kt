@@ -9,4 +9,10 @@ data class HpyConfig(
     val preferL2capDownload: Boolean = true,
     val minRssi: Int = -80,
     val downloadStallTimeoutMs: Long = 60_000L,
+    val reconnectMaxAttempts: Int = 64,
+    val downloadFailsafeIntervalMs: Long = 21L * 60 * 1000,
+    val memfaultMinIntervalMs: Long = 0L,
+    val autoReconnect: Boolean = true,
+    val fwStreamInterBlockDelayMs: Long = 30L,
+    val fwStreamDrainDelayMs: Long = 2000L,
 )

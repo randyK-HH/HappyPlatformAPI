@@ -19,7 +19,7 @@ class ConnectionManager(
     private val shim: PlatformBleShim,
     private val timeSource: PlatformTimeSource,
     private val scope: CoroutineScope,
-    private val config: ConnectionConfig = ConnectionConfig(),
+    internal var config: ConnectionConfig = ConnectionConfig(),
 ) : ShimCallback {
 
     companion object {
@@ -82,6 +82,10 @@ class ConnectionManager(
 
     fun getActiveConnections(): List<ConnectionSlot> {
         return slots.filterNotNull()
+    }
+
+    fun updateSlotConfig(connId: ConnectionId, newConfig: ConnectionConfig) {
+        getSlot(connId)?.config = newConfig
     }
 
     // ---- ShimCallback implementation ----

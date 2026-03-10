@@ -151,6 +151,14 @@ class HappyPlatformApi internal constructor(
         return manager.getSlot(connId)?.state
     }
 
+    fun updateConfig(config: HpyConfig) {
+        manager.config = mapToConnectionConfig(config)
+    }
+
+    fun updateConnectionConfig(connId: ConnectionId, config: HpyConfig) {
+        manager.updateSlotConfig(connId, mapToConnectionConfig(config))
+    }
+
     fun destroy() {
         manager.destroy()
         scope.cancel()
@@ -194,16 +202,24 @@ fun createHappyPlatformApi(
     config: HpyConfig = HpyConfig(),
     scope: CoroutineScope = CoroutineScope(SupervisorJob()),
 ): HappyPlatformApi {
-    val connConfig = ConnectionConfig(
-        commandTimeoutMs = config.commandTimeoutMs,
-        skipFingerDetection = config.skipFingerDetection,
-        requestedMtu = config.requestedMtu,
-        downloadBatchSize = config.downloadBatchSize,
-        downloadMaxRetries = config.downloadMaxRetries,
-        preferL2capDownload = config.preferL2capDownload,
-        minRssi = config.minRssi,
-        downloadStallTimeoutMs = config.downloadStallTimeoutMs,
-    )
+    val connConfig = mapToConnectionConfig(config)
     val manager = ConnectionManager(shim, timeSource, scope, connConfig)
     return HappyPlatformApi(manager, scope)
 }
+
+private fun mapToConnectionConfig(config: HpyConfig): ConnectionConfig = ConnectionConfig(
+    commandTimeoutMs = config.commandTimeoutMs,
+    skipFingerDetection = config.skipFingerDetection,
+    requestedMtu = config.requestedMtu,
+    downloadBatchSize = config.downloadBatchSize,
+    downloadMaxRetries = config.downloadMaxRetries,
+    preferL2capDownload = config.preferL2capDownload,
+    minRssi = config.minRssi,
+    downloadStallTimeoutMs = config.downloadStallTimeoutMs,
+    reconnectMaxAttempts = config.reconnectMaxAttempts,
+    fwStreamInterBlockDelayMs = config.fwStreamInterBlockDelayMs,
+    fwStreamDrainDelayMs = config.fwStreamDrainDelayMs,
+    downloadFailsafeIntervalMs = config.downloadFailsafeIntervalMs,
+    memfaultMinIntervalMs = config.memfaultMinIntervalMs,
+    autoReconnect = config.autoReconnect,
+)

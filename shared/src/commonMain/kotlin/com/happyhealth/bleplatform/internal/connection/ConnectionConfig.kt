@@ -19,6 +19,8 @@ val FW_RECONNECT_SCHEDULE = listOf(
     ReconnectTier(49, 64, 10_000L),
 )
 
+val UNLIMITED_RECONNECT_TIER = ReconnectTier(65, Int.MAX_VALUE, 60_000L)
+
 data class ConnectionConfig(
     val commandTimeoutMs: Long = 5000L,
     val skipFingerDetection: Boolean = false,
@@ -36,4 +38,7 @@ data class ConnectionConfig(
     val fwStreamDrainDelayMs: Long = 2000L,
     val minRssi: Int = -80,
     val downloadCooldownMs: Long = 20L * 60 * 1000,  // 20 minutes
+    val downloadFailsafeIntervalMs: Long = 21L * 60 * 1000,
+    val memfaultMinIntervalMs: Long = 0L,
+    val autoReconnect: Boolean = true,
 )

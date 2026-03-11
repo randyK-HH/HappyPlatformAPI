@@ -31,6 +31,7 @@ interface ShimCallback {
     fun onL2capConnected(connId: ConnectionId)
     fun onL2capFrame(connId: ConnectionId, frameData: ByteArray)
     fun onL2capBatchComplete(connId: ConnectionId, framesReceived: Int, crcValid: Boolean)
+    fun onL2capCrcTimeout(connId: ConnectionId, framesReceived: Int)
     fun onL2capError(connId: ConnectionId, message: String)
 
     fun onL2capSendProgress(connId: ConnectionId, blocksSent: Int, blocksTotal: Int)

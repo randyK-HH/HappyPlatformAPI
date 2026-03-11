@@ -199,7 +199,7 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
         }
     }
 
-    override fun l2capStartReceiving(connId: ConnectionId, expectedFrames: Int) {
+    override fun l2capStartReceiving(connId: ConnectionId, expectedFrames: Int, crcTimeoutMs: Long) {
         val socket = l2capSockets[connId.value]
         if (socket == null) {
             callback?.onL2capError(connId, "No L2CAP socket for connId=$connId")
@@ -217,6 +217,8 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
             var framesReceived = 0
             var runningCrc: UInt = CRC_INIT
             var batchDone = false
+            var crcTimedOut = false
+            var crcWatchdog: Job? = null
 
             try {
                 while (isActive && !batchDone) {
@@ -228,6 +230,15 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
 
                     while (remaining > 0) {
                         if (framesReceived >= expectedFrames) {
+                            // Start CRC watchdog on first entry to CRC accumulation
+                            if (crcWatchdog == null) {
+                                crcWatchdog = launch {
+                                    delay(crcTimeoutMs)
+                                    crcTimedOut = true
+                                    Log.w(TAG, "[${connId}] CRC watchdog fired after ${crcTimeoutMs}ms — closing socket")
+                                    try { socket.close() } catch (_: Exception) {}
+                                }
+                            }
                             // Accumulate CRC packet (5 bytes)
                             val residualBuf = if (bufState == 0) buf0 else buf1
                             val residualCnt = if (bufState == 0) buf0Cnt else buf1Cnt
@@ -240,6 +251,7 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
                             }
                             val newCnt = if (bufState == 0) buf0Cnt else buf1Cnt
                             if (newCnt >= 5) {
+                                crcWatchdog?.cancel()
                                 val receivedCrc = readUInt32(residualBuf, 0)
                                 val finalCrc = finalizeCrc(runningCrc)
                                 val crcValid = (finalCrc == receivedCrc)
@@ -284,7 +296,10 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
                     }
                 }
             } catch (e: Exception) {
-                if (isActive) {
+                if (crcTimedOut) {
+                    Log.w(TAG, "[${connId}] L2CAP CRC timeout: $framesReceived frames received, no CRC packet")
+                    callback?.onL2capCrcTimeout(connId, framesReceived)
+                } else if (isActive) {
                     Log.e(TAG, "[${connId}] L2CAP read error: ${e.message}")
                     callback?.onL2capError(connId, "L2CAP read error: ${e.message}")
                 }

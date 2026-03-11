@@ -1272,6 +1272,46 @@ class ConnectionSlot(
         handleDownloadAction(action)
     }
 
+    fun onL2capCrcTimeout(framesReceived: Int) {
+        downloadStallJob?.cancel()
+        downloadStallJob = null
+        val rssiStr = lastRssi?.let { ", RSSI=$it" } ?: ""
+        log("CRC timeout after ${config.l2capCrcTimeoutMs / 1000}s$rssiStr")
+        shim.l2capClose(connId)
+
+        val rssiGood = lastRssi == null || lastRssi!! >= config.minRssi
+        if (rssiGood) {
+            // Delegate to existing CRC-failure retry path
+            val controller = downloadController ?: return
+            log("RSSI OK — delegating to CRC-failure retry path")
+            val action = controller.onL2capBatchComplete(framesReceived, crcValid = false)
+            handleDownloadAction(action)
+        } else {
+            // Bad RSSI — stall recovery: save sync position, discard partial batch
+            log("RSSI too low — stall recovery")
+            downloadController?.let { ctrl ->
+                savedAppSyncFrameCount = ctrl.currentSyncFrameCount
+                savedAppSyncReboots = ctrl.currentSyncReboots
+                cumulativeFramesDownloaded += ctrl.sessionFramesDownloaded
+                cumulativeFramesTotal += ctrl.sessionFramesDownloaded
+                lastCommittedSyncFrameCount = ctrl.currentSyncFrameCount
+                lastCommittedSyncReboots = ctrl.currentSyncReboots
+                val partialFrames = ctrl.batchFramesReceived
+                if (partialFrames > 0) {
+                    log("CRC timeout stall recovery: $partialFrames partial-batch frames to discard")
+                    emitEvent(HpyEvent.DownloadInterrupted(connId, partialFrames))
+                }
+            }
+            downloadController = null
+            l2capConnectTimeoutJob?.cancel()
+            l2capConnectTimeoutJob = null
+            commandQueue.flush()
+            log("CRC timeout stall recovery -> WAITING")
+            transition(HpyConnectionState.WAITING)
+            startDownloadFailsafeTimer()
+        }
+    }
+
     fun onL2capError(message: String) {
         l2capConnectTimeoutJob?.cancel()
         l2capConnectTimeoutJob = null
@@ -1293,7 +1333,7 @@ class ConnectionSlot(
                     onL2capError("L2CAP connect timeout")
                 }
             }
-            is DownloadAction.StartL2capReceive -> shim.l2capStartReceiving(connId, action.expectedFrames)
+            is DownloadAction.StartL2capReceive -> shim.l2capStartReceiving(connId, action.expectedFrames, config.l2capCrcTimeoutMs)
             is DownloadAction.CloseL2cap -> shim.l2capClose(connId)
             is DownloadAction.EmitEvent -> emitEvent(action.event)
             is DownloadAction.SessionComplete -> {

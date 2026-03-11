@@ -168,6 +168,10 @@ class ConnectionManager(
         getSlot(connId)?.onL2capBatchComplete(framesReceived, crcValid)
     }
 
+    override fun onL2capCrcTimeout(connId: ConnectionId, framesReceived: Int) {
+        getSlot(connId)?.onL2capCrcTimeout(framesReceived)
+    }
+
     override fun onL2capError(connId: ConnectionId, message: String) {
         getSlot(connId)?.onL2capError(message)
     }

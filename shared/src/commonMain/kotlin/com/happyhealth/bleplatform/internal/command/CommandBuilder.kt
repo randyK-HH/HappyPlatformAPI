@@ -155,6 +155,32 @@ object CommandBuilder {
         return cmd
     }
 
+    fun buildEnableShipMode(countdownMinutes: Int): ByteArray =
+        byteArrayOf(CommandId.ENABLE_SHIP_MODE, countdownMinutes.toByte())
+
+    fun buildSetConnectionParams(
+        useProvidedParams: Boolean,
+        freezeDynamicCi: Boolean,
+        setClock: Boolean,
+        ciMax: Int,
+        ciMin: Int,
+        slaveLatency: Int,
+        clock: Byte,
+    ): ByteArray {
+        val cmd = ByteArray(9)
+        cmd[0] = CommandId.SET_CONNECTION_PARAMS
+        var flags = 0
+        if (useProvidedParams) flags = flags or 0x01
+        if (freezeDynamicCi) flags = flags or 0x02
+        if (setClock) flags = flags or 0x04
+        cmd[1] = flags.toByte()
+        writeUInt16(cmd, 2, ciMax.toUShort())
+        writeUInt16(cmd, 4, ciMin.toUShort())
+        writeUInt16(cmd, 6, slaveLatency.toUShort())
+        cmd[8] = clock
+        return cmd
+    }
+
     fun buildAssert(): ByteArray =
         byteArrayOf(CommandId.ASSERT, 0xA5.toByte(), 0x2D, 0xB4.toByte())
 

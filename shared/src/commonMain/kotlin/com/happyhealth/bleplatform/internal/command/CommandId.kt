@@ -11,10 +11,12 @@ object CommandId {
     const val SET_DAQ_CONFIG: Byte = 0x2A
     const val GET_DAQ_CONFIG: Byte = 0x2B
     const val SET_FINGER_DETECTION: Byte = 0x2D
+    const val ENABLE_SHIP_MODE: Byte = 0x30
     const val SET_INFO: Byte = 0x32
     const val IDENTIFY: Byte = 0x33
     const val CONFIGURE_L2CAP: Byte = 0x34
     const val GET_FRAMES_L2CAP: Byte = 0x35
+    const val SET_CONNECTION_PARAMS: Byte = 0x37
     const val GET_EXTENDED_DEVICE_STATUS: Byte = 0x38
     const val SET_SYNC_FRAME: Byte = 0x19
     const val GET_SYNC_FRAME: Byte = 0x1A

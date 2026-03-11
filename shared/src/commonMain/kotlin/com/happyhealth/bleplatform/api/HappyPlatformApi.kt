@@ -95,6 +95,27 @@ class HappyPlatformApi internal constructor(
         return enqueueHcsCommand(connId, "ASSERT", CommandBuilder.buildAssert(), FirmwareTier.TIER_1)
     }
 
+    fun enableShipMode(connId: ConnectionId, countdownMinutes: Int): HpyResult {
+        return enqueueHcsCommand(connId, "ENABLE_SHIP_MODE", CommandBuilder.buildEnableShipMode(countdownMinutes), FirmwareTier.TIER_2)
+    }
+
+    fun setConnectionParams(
+        connId: ConnectionId,
+        useProvidedParams: Boolean,
+        freezeDynamicCi: Boolean,
+        setClock: Boolean,
+        ciMax: Int,
+        ciMin: Int,
+        slaveLatency: Int,
+        clock: Byte,
+    ): HpyResult {
+        return enqueueHcsCommand(
+            connId, "SET_CONN_PARAMS",
+            CommandBuilder.buildSetConnectionParams(useProvidedParams, freezeDynamicCi, setClock, ciMax, ciMin, slaveLatency, clock),
+            FirmwareTier.TIER_2,
+        )
+    }
+
     // ---- FW Update ----
 
     fun startFwUpdate(connId: ConnectionId, imageBytes: ByteArray): HpyResult {

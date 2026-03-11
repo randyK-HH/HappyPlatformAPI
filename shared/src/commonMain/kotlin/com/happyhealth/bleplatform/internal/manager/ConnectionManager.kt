@@ -172,6 +172,18 @@ class ConnectionManager(
         getSlot(connId)?.onL2capCrcTimeout(framesReceived)
     }
 
+    override fun onL2capThroughputProgress(connId: ConnectionId, packetsReceived: Int, expectedPackets: Int) {
+        getSlot(connId)?.onL2capThroughputProgress(packetsReceived, expectedPackets)
+    }
+
+    override fun onL2capThroughputComplete(connId: ConnectionId, packetsReceived: Int, elapsedMs: Long) {
+        getSlot(connId)?.onL2capThroughputComplete(packetsReceived, elapsedMs)
+    }
+
+    override fun onL2capThroughputTimeout(connId: ConnectionId, packetsReceived: Int, elapsedMs: Long) {
+        getSlot(connId)?.onL2capThroughputTimeout(packetsReceived, elapsedMs)
+    }
+
     override fun onL2capError(connId: ConnectionId, message: String) {
         getSlot(connId)?.onL2capError(message)
     }

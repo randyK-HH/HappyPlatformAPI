@@ -106,6 +106,11 @@ class ConnectionSlot(
     private var memfaultAccumulator: ByteArray? = null
     private var memfaultAccumulatorPos: Int = 0
 
+    // Throughput test
+    private var throughputExpectedPackets: Int = 0
+    private var throughputTimeoutJob: Job? = null
+    private var throughputAwaitingL2capOpen: Boolean = false
+
     // Guard against duplicate Android BLE callbacks (onConnectionStateChange/onMtuChanged can fire twice)
     private var connectHandled: Boolean = false
     private var serviceDiscoveryStarted: Boolean = false
@@ -132,6 +137,8 @@ class ConnectionSlot(
                 enqueueHandshakeCommand(next)
             } else if (state == HpyConnectionState.DOWNLOADING) {
                 abortDownloadSession("Download command timeout")
+            } else if (state == HpyConnectionState.THROUGHPUT_TESTING) {
+                abortThroughputTest("Command timeout: ${cmd.tag}")
             }
         },
     )
@@ -229,6 +236,103 @@ class ConnectionSlot(
             log("Download stopped by user (was WAITING)")
             transition(HpyConnectionState.READY)
         }
+    }
+
+    // ---- Throughput Test ----
+
+    fun startThroughputTest(numPackets: Int) {
+        if (state != HpyConnectionState.READY) return
+        throughputExpectedPackets = numPackets
+        throughputAwaitingL2capOpen = true
+        transition(HpyConnectionState.THROUGHPUT_TESTING)
+        commandQueue.enqueue(QueuedCommand(
+            tag = "TP_CONFIGURE_L2CAP_OPEN",
+            charId = HpyCharId.CMD_RX,
+            data = CommandBuilder.buildConfigureL2cap(listen = true, turbo48 = false),
+            timeoutMs = config.commandTimeoutMs,
+            completionType = CompletionType.ON_NOTIFICATION,
+        ))
+    }
+
+    private fun handleThroughputCommandResponse(cmdByte: Byte, value: ByteArray) {
+        commandQueue.signalDone()
+        when (cmdByte) {
+            CommandId.CONFIGURE_L2CAP -> {
+                if (throughputAwaitingL2capOpen) {
+                    throughputAwaitingL2capOpen = false
+                    // L2CAP listen response — open socket
+                    log("Throughput: L2CAP listen confirmed — opening socket")
+                    shim.l2capOpen(connId, 130)
+                    l2capConnectTimeoutJob?.cancel()
+                    l2capConnectTimeoutJob = scope.launch {
+                        delay(10_000L)
+                        log("Throughput: L2CAP connect timeout")
+                        abortThroughputTest("L2CAP connect timeout")
+                    }
+                } else {
+                    // L2CAP close response — test complete
+                    log("Throughput: L2CAP close confirmed — returning to READY")
+                    transition(HpyConnectionState.READY)
+                }
+            }
+            CommandId.L2CAP_THROUGHPUT_TEST -> {
+                log("Throughput: test command accepted — receiving $throughputExpectedPackets packets")
+                shim.l2capStartThroughputReceive(connId, throughputExpectedPackets, 10_000L)
+            }
+            else -> {
+                log("Throughput: unexpected response 0x${cmdByte.toUByte().toString(16)}")
+            }
+        }
+    }
+
+    private fun closeThroughputL2cap() {
+        shim.l2capClose(connId)
+        commandQueue.enqueue(QueuedCommand(
+            tag = "TP_CONFIGURE_L2CAP_CLOSE",
+            charId = HpyCharId.CMD_RX,
+            data = CommandBuilder.buildConfigureL2cap(listen = false, turbo48 = false),
+            timeoutMs = config.commandTimeoutMs,
+            completionType = CompletionType.ON_NOTIFICATION,
+        ))
+    }
+
+    private fun abortThroughputTest(reason: String) {
+        log("Throughput: aborting — $reason")
+        throughputTimeoutJob?.cancel()
+        throughputTimeoutJob = null
+        l2capConnectTimeoutJob?.cancel()
+        l2capConnectTimeoutJob = null
+        shim.l2capClose(connId)
+        commandQueue.flush()
+        emitEvent(HpyEvent.Error(connId, HpyErrorCode.THROUGHPUT_TIMEOUT, "Throughput test failed: $reason"))
+        transition(HpyConnectionState.READY)
+    }
+
+    fun onL2capThroughputProgress(packetsReceived: Int, expectedPackets: Int) {
+        if (state != HpyConnectionState.THROUGHPUT_TESTING) return
+        emitEvent(HpyEvent.ThroughputProgress(connId, packetsReceived, expectedPackets))
+    }
+
+    fun onL2capThroughputComplete(packetsReceived: Int, elapsedMs: Long) {
+        if (state != HpyConnectionState.THROUGHPUT_TESTING) return
+        val throughputKBps = if (elapsedMs > 0)
+            (packetsReceived.toLong() * CommandId.THROUGHPUT_PACKET_SIZE * 1000) / (elapsedMs * 1024).toDouble()
+        else 0.0
+        emitEvent(HpyEvent.ThroughputResult(
+            connId, throughputExpectedPackets, packetsReceived, elapsedMs, throughputKBps, timedOut = false,
+        ))
+        closeThroughputL2cap()
+    }
+
+    fun onL2capThroughputTimeout(packetsReceived: Int, elapsedMs: Long) {
+        if (state != HpyConnectionState.THROUGHPUT_TESTING) return
+        val throughputKBps = if (elapsedMs > 0)
+            (packetsReceived.toLong() * CommandId.THROUGHPUT_PACKET_SIZE * 1000) / (elapsedMs * 1024).toDouble()
+        else 0.0
+        emitEvent(HpyEvent.ThroughputResult(
+            connId, throughputExpectedPackets, packetsReceived, elapsedMs, throughputKBps, timedOut = true,
+        ))
+        closeThroughputL2cap()
     }
 
     // ---- FW Update ----
@@ -664,6 +768,10 @@ class ConnectionSlot(
         fwUpdateController = null
         fwUpdateJob?.cancel()
         fwUpdateJob = null
+        throughputTimeoutJob?.cancel()
+        throughputTimeoutJob = null
+        throughputExpectedPackets = 0
+        throughputAwaitingL2capOpen = false
         memfaultAccumulator = null
         memfaultAccumulatorPos = 0
     }
@@ -782,6 +890,12 @@ class ConnectionSlot(
         // If downloading, route to download controller
         if (state == HpyConnectionState.DOWNLOADING) {
             handleDownloadCommandResponse(cmdByte, value)
+            return
+        }
+
+        // If throughput testing, route to throughput handler
+        if (state == HpyConnectionState.THROUGHPUT_TESTING) {
+            handleThroughputCommandResponse(cmdByte, value)
             return
         }
 
@@ -1240,6 +1354,17 @@ class ConnectionSlot(
     fun onL2capConnected() {
         l2capConnectTimeoutJob?.cancel()
         l2capConnectTimeoutJob = null
+        if (state == HpyConnectionState.THROUGHPUT_TESTING) {
+            log("Throughput: L2CAP socket connected — sending test command")
+            commandQueue.enqueue(QueuedCommand(
+                tag = "TP_THROUGHPUT_TEST",
+                charId = HpyCharId.CMD_RX,
+                data = CommandBuilder.buildL2capThroughputTest(throughputExpectedPackets),
+                timeoutMs = config.commandTimeoutMs,
+                completionType = CompletionType.ON_NOTIFICATION,
+            ))
+            return
+        }
         val controller = downloadController ?: return
         log("L2CAP socket connected")
         val action = controller.onL2capConnected()
@@ -1274,6 +1399,10 @@ class ConnectionSlot(
     fun onL2capError(message: String) {
         l2capConnectTimeoutJob?.cancel()
         l2capConnectTimeoutJob = null
+        if (state == HpyConnectionState.THROUGHPUT_TESTING) {
+            abortThroughputTest("L2CAP error: $message")
+            return
+        }
         val controller = downloadController ?: return
         log("L2CAP error: $message")
         val action = controller.onL2capError(message)

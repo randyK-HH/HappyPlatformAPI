@@ -20,6 +20,7 @@ object CommandId {
     const val GET_EXTENDED_DEVICE_STATUS: Byte = 0x38
     const val SET_SYNC_FRAME: Byte = 0x19
     const val GET_SYNC_FRAME: Byte = 0x1A
+    const val GET_FGSN: Byte = 0x22
     const val L2CAP_THROUGHPUT_TEST: Byte = 0x64
     const val ASSERT: Byte = 0xFD.toByte()
 
@@ -35,4 +36,5 @@ object CommandId {
     const val NOTIF_SENDER_SUPERFRAME_CLOSE: Int = 0x04
 
     const val FRAME_SIZE: Int = 4096
+    const val THROUGHPUT_PACKET_SIZE: Int = 245
 }

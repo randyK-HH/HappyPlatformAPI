@@ -307,6 +307,83 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
         }
     }
 
+    override fun l2capStartThroughputReceive(connId: ConnectionId, expectedPackets: Int, timeoutMs: Long) {
+        val socket = l2capSockets[connId.value]
+        if (socket == null) {
+            callback?.onL2capError(connId, "No L2CAP socket for connId=$connId")
+            return
+        }
+        l2capJobs[connId.value]?.cancel()
+        l2capJobs[connId.value] = l2capScope.launch {
+            val inputStream = socket.inputStream
+            val readBuf = ByteArray(512)
+            val packetBuf = ByteArray(CommandId.THROUGHPUT_PACKET_SIZE)
+            var packetBufCnt = 0
+            var packetsReceived = 0
+            var firstPacketTimeMs = 0L
+            var lastPacketTimeMs = 0L
+            var timedOut = false
+
+            // Watchdog job that resets on each received packet
+            var watchdog: Job? = null
+            fun resetWatchdog() {
+                watchdog?.cancel()
+                watchdog = launch {
+                    delay(timeoutMs)
+                    timedOut = true
+                    Log.w(TAG, "[${connId}] Throughput watchdog fired after ${timeoutMs}ms — closing socket")
+                    try { socket.close() } catch (_: Exception) {}
+                }
+            }
+            resetWatchdog()
+
+            try {
+                while (isActive && packetsReceived < expectedPackets) {
+                    val bytesRead = inputStream.read(readBuf)
+                    if (bytesRead <= 0) break
+
+                    var offset = 0
+                    var remaining = bytesRead
+
+                    while (remaining > 0 && packetsReceived < expectedPackets) {
+                        val space = CommandId.THROUGHPUT_PACKET_SIZE - packetBufCnt
+                        val toCopy = minOf(remaining, space)
+                        readBuf.copyInto(packetBuf, packetBufCnt, offset, offset + toCopy)
+                        packetBufCnt += toCopy
+                        offset += toCopy
+                        remaining -= toCopy
+
+                        if (packetBufCnt >= CommandId.THROUGHPUT_PACKET_SIZE) {
+                            val now = System.currentTimeMillis()
+                            if (packetsReceived == 0) firstPacketTimeMs = now
+                            lastPacketTimeMs = now
+                            packetsReceived++
+                            packetBufCnt = 0
+                            resetWatchdog()
+                            if (packetsReceived % 32 == 0) {
+                                callback?.onL2capThroughputProgress(connId, packetsReceived, expectedPackets)
+                            }
+                        }
+                    }
+                }
+                watchdog?.cancel()
+                val elapsedMs = if (packetsReceived > 0) lastPacketTimeMs - firstPacketTimeMs else 0L
+                Log.d(TAG, "[${connId}] Throughput complete: $packetsReceived/$expectedPackets packets, ${elapsedMs}ms")
+                callback?.onL2capThroughputComplete(connId, packetsReceived, elapsedMs)
+            } catch (e: Exception) {
+                watchdog?.cancel()
+                val elapsedMs = if (packetsReceived > 0) lastPacketTimeMs - firstPacketTimeMs else 0L
+                if (timedOut) {
+                    Log.w(TAG, "[${connId}] Throughput timeout: $packetsReceived/$expectedPackets packets, ${elapsedMs}ms")
+                    callback?.onL2capThroughputTimeout(connId, packetsReceived, elapsedMs)
+                } else if (isActive) {
+                    Log.e(TAG, "[${connId}] Throughput read error: ${e.message}")
+                    callback?.onL2capError(connId, "Throughput read error: ${e.message}")
+                }
+            }
+        }
+    }
+
     override fun l2capClose(connId: ConnectionId) {
         l2capJobs[connId.value]?.cancel()
         l2capJobs.remove(connId.value)

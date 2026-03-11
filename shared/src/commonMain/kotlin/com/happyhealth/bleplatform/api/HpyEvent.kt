@@ -130,6 +130,21 @@ sealed class HpyEvent {
         override val connId: ConnectionId,
         val rssi: Int,
     ) : HpyEvent()
+
+    data class ThroughputResult(
+        override val connId: ConnectionId,
+        val expectedPackets: Int,
+        val receivedPackets: Int,
+        val elapsedMs: Long,
+        val throughputKBps: Double,
+        val timedOut: Boolean,
+    ) : HpyEvent()
+
+    data class ThroughputProgress(
+        override val connId: ConnectionId,
+        val packetsReceived: Int,
+        val packetsExpected: Int,
+    ) : HpyEvent()
 }
 
 enum class HpyErrorCode {
@@ -148,5 +163,6 @@ enum class HpyErrorCode {
     MAX_CONNECTIONS,
     NCF,
     NOTIFICATION_SUBSCRIBE_FAIL,
+    THROUGHPUT_TIMEOUT,
     GENERIC,
 }

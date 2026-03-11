@@ -184,6 +184,9 @@ object CommandBuilder {
     fun buildAssert(): ByteArray =
         byteArrayOf(CommandId.ASSERT, 0xA5.toByte(), 0x2D, 0xB4.toByte())
 
+    fun buildGetFgsn(): ByteArray =
+        byteArrayOf(CommandId.GET_FGSN)
+
     fun buildL2capThroughputTest(numPackets: Int): ByteArray {
         val cmd = ByteArray(3)
         cmd[0] = CommandId.L2CAP_THROUGHPUT_TEST

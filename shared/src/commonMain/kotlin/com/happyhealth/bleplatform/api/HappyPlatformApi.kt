@@ -95,6 +95,10 @@ class HappyPlatformApi internal constructor(
         return enqueueHcsCommand(connId, "ASSERT", CommandBuilder.buildAssert(), FirmwareTier.TIER_1)
     }
 
+    fun getFgsn(connId: ConnectionId): HpyResult {
+        return enqueueHcsCommand(connId, "GET_FGSN", CommandBuilder.buildGetFgsn(), FirmwareTier.TIER_1)
+    }
+
     fun enableShipMode(connId: ConnectionId, countdownMinutes: Int): HpyResult {
         return enqueueHcsCommand(connId, "ENABLE_SHIP_MODE", CommandBuilder.buildEnableShipMode(countdownMinutes), FirmwareTier.TIER_2)
     }
@@ -114,6 +118,16 @@ class HappyPlatformApi internal constructor(
             CommandBuilder.buildSetConnectionParams(useProvidedParams, freezeDynamicCi, setClock, ciMax, ciMin, slaveLatency, clock),
             FirmwareTier.TIER_2,
         )
+    }
+
+    // ---- Throughput Test ----
+
+    fun startThroughputTest(connId: ConnectionId, numPackets: Int): HpyResult {
+        val slot = manager.getSlot(connId) ?: return HpyResult.ErrInvalidConnId
+        if (slot.state != HpyConnectionState.READY) return HpyResult.ErrCommandRejected
+        if (slot.firmwareTier < FirmwareTier.TIER_2) return HpyResult.ErrFwNotSupported
+        slot.startThroughputTest(numPackets)
+        return HpyResult.Ok
     }
 
     // ---- FW Update ----

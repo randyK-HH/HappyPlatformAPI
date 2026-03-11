@@ -130,6 +130,8 @@ class ConnectionSlot(
                 log("Advancing handshake past timed-out step: ${cmd.tag}")
                 val next = handshakeRunner?.onCommandComplete()
                 enqueueHandshakeCommand(next)
+            } else if (state == HpyConnectionState.DOWNLOADING) {
+                abortDownloadSession("Download command timeout")
             }
         },
     )
@@ -1087,44 +1089,35 @@ class ConnectionSlot(
             log("Download stall detected: no data received for ${config.downloadStallTimeoutMs / 1000}s$rssiStr")
             emitEvent(HpyEvent.Error(connId, HpyErrorCode.DOWNLOAD_STALL,
                 "No download data received for ${config.downloadStallTimeoutMs / 1000}s$rssiStr"))
-            // Clean up this download session but keep the cycle alive.
-            // stopDownload() would set downloadEnabled=false, permanently
-            // breaking the auto-download cycle. Instead, transition to WAITING
-            // so SuperframeClose / failsafe timer trigger the next attempt.
-            downloadController?.let { ctrl ->
-                // Save last CRC-validated sync position for recovery
-                savedAppSyncFrameCount = ctrl.currentSyncFrameCount
-                savedAppSyncReboots = ctrl.currentSyncReboots
-
-                // Accumulate only CRC-validated frames into cumulative counters.
-                // Use sessionFramesDownloaded (not sessionFramesToDownload) for the
-                // total too — the retry session's unsyncedFrames will account for
-                // the remainder, avoiding inflated progress denominators.
-                cumulativeFramesDownloaded += ctrl.sessionFramesDownloaded
-                cumulativeFramesTotal += ctrl.sessionFramesDownloaded
-
-                // Update last committed sync for cross-session NCF detection
-                lastCommittedSyncFrameCount = ctrl.currentSyncFrameCount
-                lastCommittedSyncReboots = ctrl.currentSyncReboots
-
-                // Discard unvalidated partial-batch frames from FrameWriter
-                val partialFrames = ctrl.batchFramesReceived
-                if (partialFrames > 0) {
-                    log("Stall recovery: $partialFrames partial-batch frames to discard")
-                    emitEvent(HpyEvent.DownloadInterrupted(connId, partialFrames))
-                }
-
-                shim.l2capClose(connId)
-            }
-            downloadController = null
-            downloadStallJob = null
-            l2capConnectTimeoutJob?.cancel()
-            l2capConnectTimeoutJob = null
-            commandQueue.flush()
-            log("Download session aborted by stall -> WAITING")
-            transition(HpyConnectionState.WAITING)
-            startDownloadFailsafeTimer()
+            downloadStallJob = null  // prevent self-cancellation in abortDownloadSession
+            abortDownloadSession("Download stall")
         }
+    }
+
+    private fun abortDownloadSession(reason: String) {
+        downloadStallJob?.cancel()
+        downloadStallJob = null
+        downloadController?.let { ctrl ->
+            savedAppSyncFrameCount = ctrl.currentSyncFrameCount
+            savedAppSyncReboots = ctrl.currentSyncReboots
+            cumulativeFramesDownloaded += ctrl.sessionFramesDownloaded
+            cumulativeFramesTotal += ctrl.sessionFramesDownloaded
+            lastCommittedSyncFrameCount = ctrl.currentSyncFrameCount
+            lastCommittedSyncReboots = ctrl.currentSyncReboots
+            val partialFrames = ctrl.batchFramesReceived
+            if (partialFrames > 0) {
+                log("$reason: $partialFrames partial-batch frames to discard")
+                emitEvent(HpyEvent.DownloadInterrupted(connId, partialFrames))
+            }
+            shim.l2capClose(connId)
+        }
+        downloadController = null
+        l2capConnectTimeoutJob?.cancel()
+        l2capConnectTimeoutJob = null
+        commandQueue.flush()
+        log("$reason -> WAITING")
+        transition(HpyConnectionState.WAITING)
+        startDownloadFailsafeTimer()
     }
 
     private fun beginDownloadSession(status: DeviceStatusData) {
@@ -1273,43 +1266,9 @@ class ConnectionSlot(
     }
 
     fun onL2capCrcTimeout(framesReceived: Int) {
-        downloadStallJob?.cancel()
-        downloadStallJob = null
         val rssiStr = lastRssi?.let { ", RSSI=$it" } ?: ""
         log("CRC timeout after ${config.l2capCrcTimeoutMs / 1000}s$rssiStr")
-        shim.l2capClose(connId)
-
-        val rssiGood = lastRssi == null || lastRssi!! >= config.minRssi
-        if (rssiGood) {
-            // Delegate to existing CRC-failure retry path
-            val controller = downloadController ?: return
-            log("RSSI OK — delegating to CRC-failure retry path")
-            val action = controller.onL2capBatchComplete(framesReceived, crcValid = false)
-            handleDownloadAction(action)
-        } else {
-            // Bad RSSI — stall recovery: save sync position, discard partial batch
-            log("RSSI too low — stall recovery")
-            downloadController?.let { ctrl ->
-                savedAppSyncFrameCount = ctrl.currentSyncFrameCount
-                savedAppSyncReboots = ctrl.currentSyncReboots
-                cumulativeFramesDownloaded += ctrl.sessionFramesDownloaded
-                cumulativeFramesTotal += ctrl.sessionFramesDownloaded
-                lastCommittedSyncFrameCount = ctrl.currentSyncFrameCount
-                lastCommittedSyncReboots = ctrl.currentSyncReboots
-                val partialFrames = ctrl.batchFramesReceived
-                if (partialFrames > 0) {
-                    log("CRC timeout stall recovery: $partialFrames partial-batch frames to discard")
-                    emitEvent(HpyEvent.DownloadInterrupted(connId, partialFrames))
-                }
-            }
-            downloadController = null
-            l2capConnectTimeoutJob?.cancel()
-            l2capConnectTimeoutJob = null
-            commandQueue.flush()
-            log("CRC timeout stall recovery -> WAITING")
-            transition(HpyConnectionState.WAITING)
-            startDownloadFailsafeTimer()
-        }
+        abortDownloadSession("CRC timeout recovery")
     }
 
     fun onL2capError(message: String) {

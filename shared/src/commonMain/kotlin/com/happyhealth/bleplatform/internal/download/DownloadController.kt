@@ -211,8 +211,7 @@ internal class DownloadController(
 
         val anomalyActions = batchResult.anomalies.map { a ->
             DownloadAction.EmitEvent(HpyEvent.Log(connId,
-                "NCF: frame[${a.frameIndex}] expected fc=${a.expectedCount} rb=${a.expectedReboots}, " +
-                "got fc=${a.actualCount} rb=${a.actualReboots}"))
+                formatNcfMessage(a)))
         }
         val batchEvent = DownloadAction.EmitEvent(
             HpyEvent.DownloadBatch(connId, framesReceived, cumulativeFramesOffset + totalFramesDownloaded, crcValid,
@@ -315,8 +314,7 @@ internal class DownloadController(
 
         val anomalyActions = batchResult.anomalies.map { a ->
             DownloadAction.EmitEvent(HpyEvent.Log(connId,
-                "NCF: frame[${a.frameIndex}] expected fc=${a.expectedCount} rb=${a.expectedReboots}, " +
-                "got fc=${a.actualCount} rb=${a.actualReboots}"))
+                formatNcfMessage(a)))
         }
         val batchEvent = DownloadAction.EmitEvent(
             HpyEvent.DownloadBatch(connId, framesReceived, cumulativeFramesOffset + totalFramesDownloaded, crcValid,
@@ -459,6 +457,27 @@ internal class DownloadController(
             DownloadAction.SessionComplete,
         )
         return DownloadAction.Multiple(actions)
+    }
+
+    private fun formatNcfMessage(a: FrameAnomaly): String {
+        return when {
+            a.actualReboots != a.expectedReboots && a.actualCount == 1u -> {
+                // Reboot gap: rb jumped by more than 1, but fc=1 is correct for a reboot
+                val skipped = a.actualReboots.toLong() - a.expectedReboots.toLong() - 1
+                "NCF: frame[${a.frameIndex}] reboot gap rb=${a.expectedReboots}\u2192${a.actualReboots}" +
+                    " (skipped $skipped boot${if (skipped != 1L) "s" else ""})"
+            }
+            a.actualReboots != a.expectedReboots -> {
+                // Reboot with unexpected fc (not 1)
+                "NCF: frame[${a.frameIndex}] reboot rb=${a.expectedReboots}\u2192${a.actualReboots}" +
+                    ", fc=${a.actualCount} (expected fc=1)"
+            }
+            else -> {
+                // Same boot, frame gap
+                "NCF: frame[${a.frameIndex}] expected fc=${a.expectedCount}, got fc=${a.actualCount}" +
+                    " (rb=${a.expectedReboots})"
+            }
+        }
     }
 
     companion object {

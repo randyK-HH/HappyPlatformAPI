@@ -7,6 +7,7 @@ data class HpyConfig(
     val downloadBatchSize: Int = 64,
     val downloadMaxRetries: Int = 1,
     val preferL2capDownload: Boolean = true,
+    val l2capClockByte: Byte = 0x01,  // 0x00=16MHz, 0x01=48MHz, 0x02=96MHz
     val minRssi: Int = -80,
     val downloadStallTimeoutMs: Long = 60_000L,
     val reconnectMaxAttempts: Int = 64,

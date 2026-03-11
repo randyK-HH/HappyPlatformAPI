@@ -90,11 +90,11 @@ object CommandBuilder {
     fun buildSetFingerDetection(enable: Boolean = true): ByteArray =
         byteArrayOf(CommandId.SET_FINGER_DETECTION, if (enable) 0x01 else 0x00)
 
-    fun buildConfigureL2cap(listen: Boolean, turbo48: Boolean): ByteArray {
+    fun buildConfigureL2cap(listen: Boolean, clockByte: Byte = CommandId.L2CAP_TURBO_48MHZ): ByteArray {
         return byteArrayOf(
             CommandId.CONFIGURE_L2CAP,
             if (listen) CommandId.L2CAP_ACTION_LISTEN else CommandId.L2CAP_ACTION_CLOSE,
-            if (turbo48) CommandId.L2CAP_TURBO_48MHZ else CommandId.L2CAP_TURBO_16MHZ,
+            clockByte,
         )
     }
 

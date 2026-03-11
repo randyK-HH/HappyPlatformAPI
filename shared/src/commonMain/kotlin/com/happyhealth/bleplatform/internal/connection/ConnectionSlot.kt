@@ -244,11 +244,13 @@ class ConnectionSlot(
         if (state != HpyConnectionState.READY) return
         throughputExpectedPackets = numPackets
         throughputAwaitingL2capOpen = true
+        val clockLabel = clockByteLabel(config.l2capClockByte)
+        log("Throughput test: $numPackets packets, clock=$clockLabel")
         transition(HpyConnectionState.THROUGHPUT_TESTING)
         commandQueue.enqueue(QueuedCommand(
             tag = "TP_CONFIGURE_L2CAP_OPEN",
             charId = HpyCharId.CMD_RX,
-            data = CommandBuilder.buildConfigureL2cap(listen = true, turbo48 = false),
+            data = CommandBuilder.buildConfigureL2cap(listen = true, clockByte = config.l2capClockByte),
             timeoutMs = config.commandTimeoutMs,
             completionType = CompletionType.ON_NOTIFICATION,
         ))
@@ -290,7 +292,7 @@ class ConnectionSlot(
         commandQueue.enqueue(QueuedCommand(
             tag = "TP_CONFIGURE_L2CAP_CLOSE",
             charId = HpyCharId.CMD_RX,
-            data = CommandBuilder.buildConfigureL2cap(listen = false, turbo48 = false),
+            data = CommandBuilder.buildConfigureL2cap(listen = false),
             timeoutMs = config.commandTimeoutMs,
             completionType = CompletionType.ON_NOTIFICATION,
         ))
@@ -1290,13 +1292,14 @@ class ConnectionSlot(
     }
 
     private fun startDownloadSessionWithStatus(status: DeviceStatusData) {
-        log("L2CAP check: fw='${deviceInfo.fwVersion}', supportsL2cap=${deviceInfo.supportsL2capDownload}, preferL2cap=${config.preferL2capDownload}")
+        log("L2CAP check: fw='${deviceInfo.fwVersion}', supportsL2cap=${deviceInfo.supportsL2capDownload}, preferL2cap=${config.preferL2capDownload}, clock=${clockByteLabel(config.l2capClockByte)}")
         val useL2cap = deviceInfo.supportsL2capDownload && config.preferL2capDownload
         val controller = DownloadController(
             connId = connId,
             batchSize = config.downloadBatchSize,
             maxRetries = config.downloadMaxRetries,
             supportsL2cap = useL2cap,
+            l2capClockByte = config.l2capClockByte,
             cumulativeFramesOffset = cumulativeFramesDownloaded,
             cumulativeTotalOffset = cumulativeFramesTotal,
             onFrameEmit = { frameData -> emitEvent(HpyEvent.DownloadFrame(connId, frameData)) },
@@ -1450,6 +1453,9 @@ class ConnectionSlot(
 
     private fun sendCommand(cmd: QueuedCommand) {
         log("TX ${cmd.tag} [${cmd.data.size}b]")
+        if (cmd.tag == "DL_CONFIGURE_L2CAP_OPEN" || cmd.tag == "TP_CONFIGURE_L2CAP_OPEN") {
+            log("L2CAP Clock Request: ${clockByteLabel(config.l2capClockByte)}")
+        }
         if (cmd.tag == "DL_CONFIGURE_L2CAP_OPEN") {
             val rssiStr = lastRssi?.let { "$it dBm" } ?: "unknown"
             log("RSSI: $rssiStr")
@@ -1468,5 +1474,12 @@ class ConnectionSlot(
 
     private fun log(msg: String) {
         emitEvent(HpyEvent.Log(connId, msg))
+    }
+
+    private fun clockByteLabel(b: Byte): String = when (b) {
+        CommandId.L2CAP_TURBO_16MHZ -> "16MHz"
+        CommandId.L2CAP_TURBO_48MHZ -> "48MHz"
+        CommandId.L2CAP_TURBO_96MHZ -> "96MHz"
+        else -> "Unknown(0x${b.toInt().and(0xFF).toString(16)})"
     }
 }

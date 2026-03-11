@@ -28,6 +28,7 @@ data class ConnectionConfig(
     val downloadBatchSize: Int = 64,
     val downloadMaxRetries: Int = 1,
     val preferL2capDownload: Boolean = true,
+    val l2capClockByte: Byte = 0x01,  // 0x00=16MHz, 0x01=48MHz, 0x02=96MHz
     val l2capConnectTimeoutMs: Long = 15_000L,
     val l2capCrcTimeoutMs: Long = 30_000L,
     val downloadStallTimeoutMs: Long = 60_000L,

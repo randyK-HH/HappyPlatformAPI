@@ -249,6 +249,7 @@ private fun mapToConnectionConfig(config: HpyConfig): ConnectionConfig = Connect
     downloadBatchSize = config.downloadBatchSize,
     downloadMaxRetries = config.downloadMaxRetries,
     preferL2capDownload = config.preferL2capDownload,
+    l2capClockByte = config.l2capClockByte,
     minRssi = config.minRssi,
     downloadStallTimeoutMs = config.downloadStallTimeoutMs,
     reconnectMaxAttempts = config.reconnectMaxAttempts,

@@ -47,6 +47,7 @@ internal class DownloadController(
     private val batchSize: Int,
     private val maxRetries: Int,
     private val supportsL2cap: Boolean,
+    private val l2capClockByte: Byte = 0x01,
     private val cumulativeFramesOffset: Int = 0,
     private val cumulativeTotalOffset: Int = 0,
     private val onFrameEmit: ((ByteArray) -> Unit)? = null,
@@ -342,7 +343,7 @@ internal class DownloadController(
         return DownloadAction.EnqueueCommand(QueuedCommand(
             tag = "DL_CONFIGURE_L2CAP_OPEN",
             charId = HpyCharId.CMD_RX,
-            data = CommandBuilder.buildConfigureL2cap(listen = true, turbo48 = true),
+            data = CommandBuilder.buildConfigureL2cap(listen = true, clockByte = l2capClockByte),
             timeoutMs = 5000L,
             completionType = CompletionType.ON_NOTIFICATION,
         ))
@@ -401,7 +402,7 @@ internal class DownloadController(
             DownloadAction.EnqueueCommand(QueuedCommand(
                 tag = "DL_CONFIGURE_L2CAP_CLOSE",
                 charId = HpyCharId.CMD_RX,
-                data = CommandBuilder.buildConfigureL2cap(listen = false, turbo48 = false),
+                data = CommandBuilder.buildConfigureL2cap(listen = false),
                 timeoutMs = 5000L,
                 completionType = CompletionType.ON_NOTIFICATION,
             )),

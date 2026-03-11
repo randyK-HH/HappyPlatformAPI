@@ -28,8 +28,9 @@ object CommandId {
 
     const val L2CAP_ACTION_LISTEN: Byte = 0x10
     const val L2CAP_ACTION_CLOSE: Byte = 0x20
-    const val L2CAP_TURBO_48MHZ: Byte = 0x01
     const val L2CAP_TURBO_16MHZ: Byte = 0x00
+    const val L2CAP_TURBO_48MHZ: Byte = 0x01
+    const val L2CAP_TURBO_96MHZ: Byte = 0x02
 
     const val FLAGS_AUTO_SYNC_FRAME: UInt = 0x0004u
 

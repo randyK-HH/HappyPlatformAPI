@@ -223,7 +223,16 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
             try {
                 while (isActive && !batchDone) {
                     val bytesRead = inputStream.read(readBuf)
-                    if (bytesRead <= 0) break
+                    if (bytesRead <= 0) {
+                        if (framesReceived < expectedFrames) {
+                            Log.e(TAG, "[${connId}] L2CAP channel closed mid-batch ($framesReceived/$expectedFrames frames)")
+                            callback?.onL2capError(connId, "L2CAP channel closed ($framesReceived/$expectedFrames frames received)")
+                        } else {
+                            Log.w(TAG, "[${connId}] L2CAP channel closed during CRC wait ($framesReceived frames received)")
+                            callback?.onL2capCrcTimeout(connId, framesReceived)
+                        }
+                        break
+                    }
 
                     var offset = 0
                     var remaining = bytesRead
@@ -340,7 +349,16 @@ class AndroidBleShim(private val context: Context) : PlatformBleShim {
             try {
                 while (isActive && packetsReceived < expectedPackets) {
                     val bytesRead = inputStream.read(readBuf)
-                    if (bytesRead <= 0) break
+                    if (bytesRead <= 0) {
+                        if (packetsReceived < expectedPackets) {
+                            watchdog?.cancel()
+                            val elapsedMs = if (packetsReceived > 0) lastPacketTimeMs - firstPacketTimeMs else 0L
+                            Log.e(TAG, "[${connId}] L2CAP channel closed during throughput ($packetsReceived/$expectedPackets packets, ${elapsedMs}ms)")
+                            callback?.onL2capThroughputTimeout(connId, packetsReceived, elapsedMs)
+                            return@launch
+                        }
+                        break
+                    }
 
                     var offset = 0
                     var remaining = bytesRead

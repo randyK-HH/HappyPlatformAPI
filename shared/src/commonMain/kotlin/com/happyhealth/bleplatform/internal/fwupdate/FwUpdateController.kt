@@ -47,7 +47,7 @@ internal class FwUpdateController(
             state = State.ERROR
             return FwUpdateAction.EmitEvent(
                 HpyEvent.Error(connId, HpyErrorCode.FW_TRANSFER_FAIL,
-                    "SUOTA error: ${suotaStatusName(statusCode)}")
+                    "SUOTA error: ${suotaStatusName(statusCode)} ($statusCode)")
             )
         }
 
@@ -75,7 +75,7 @@ internal class FwUpdateController(
                     state = State.ERROR
                     FwUpdateAction.EmitEvent(
                         HpyEvent.Error(connId, HpyErrorCode.FW_TRANSFER_FAIL,
-                            "SUOTA FINALIZE failed: status=$statusCode")
+                            "SUOTA FINALIZE failed: ${suotaStatusName(statusCode)} ($statusCode)")
                     )
                 }
             }
@@ -150,11 +150,18 @@ internal class FwUpdateController(
         const val SUOTA_CMP_OK = 2
         private const val SUOTA_SRV_EXIT = 3
         private const val SUOTA_APP_ERROR = 9
-        private const val SUOTA_IMG_STARTED = 16
+        private const val SUOTA_IMG_STARTED = 0x10
+        private const val SUOTA_INVAL_IMG_BANK = 0x11
+        private const val SUOTA_INVAL_IMG_HDR = 0x12
+        private const val SUOTA_INVAL_IMG_SIZE = 0x13
+        private const val SUOTA_INVAL_PRODUCT_HDR = 0x14
+        private const val SUOTA_SAME_IMG_ERR = 0x15
+        private const val SUOTA_EXT_MEM_READ_ERR = 0x16
 
-        private fun isSuotaError(code: Int): Boolean = code in SUOTA_SRV_EXIT..SUOTA_APP_ERROR
+        private fun isSuotaError(code: Int): Boolean =
+            code in SUOTA_SRV_EXIT..SUOTA_APP_ERROR || code in SUOTA_INVAL_IMG_BANK..SUOTA_EXT_MEM_READ_ERR
 
-        private fun suotaStatusName(code: Int): String = when (code) {
+        internal fun suotaStatusName(code: Int): String = when (code) {
             SUOTA_SRV_STARTED -> "SRV_STARTED"
             SUOTA_CMP_OK -> "CMP_OK"
             SUOTA_SRV_EXIT -> "SRV_EXIT"
@@ -165,6 +172,12 @@ internal class FwUpdateController(
             8 -> "INVAL_MEM_TYPE"
             SUOTA_APP_ERROR -> "APP_ERROR"
             SUOTA_IMG_STARTED -> "IMG_STARTED"
+            SUOTA_INVAL_IMG_BANK -> "INVAL_IMG_BANK"
+            SUOTA_INVAL_IMG_HDR -> "INVAL_IMG_HDR"
+            SUOTA_INVAL_IMG_SIZE -> "INVAL_IMG_SIZE"
+            SUOTA_INVAL_PRODUCT_HDR -> "INVAL_PRODUCT_HDR"
+            SUOTA_SAME_IMG_ERR -> "SAME_IMG_ERR"
+            SUOTA_EXT_MEM_READ_ERR -> "EXT_MEM_READ_ERR"
             else -> "UNKNOWN($code)"
         }
     }

@@ -610,7 +610,7 @@ class ConnectionSlot(
                 val controller = fwUpdateController ?: return
                 if (value.isEmpty()) return
                 val statusCode = value[0].toUByte().toInt()
-                log("SUOTA_STATUS: $statusCode")
+                log("SUOTA_STATUS: $statusCode (${FwUpdateController.suotaStatusName(statusCode)})")
                 handleFwUpdateAction(controller.onSuotaStatus(statusCode))
             }
             else -> {}

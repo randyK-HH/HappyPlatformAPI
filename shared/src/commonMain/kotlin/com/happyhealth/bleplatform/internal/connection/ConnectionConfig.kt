@@ -43,4 +43,5 @@ data class ConnectionConfig(
     val downloadFailsafeIntervalMs: Long = 21L * 60 * 1000,
     val memfaultMinIntervalMs: Long = 0L,
     val autoReconnect: Boolean = true,
+    val fwUpdateUseGatt: Boolean = false,
 )

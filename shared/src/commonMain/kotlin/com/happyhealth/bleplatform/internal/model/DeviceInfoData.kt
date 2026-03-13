@@ -10,4 +10,5 @@ data class DeviceInfoData(
     val firmwareTier: FirmwareTier get() = FirmwareTier.fromVersionString(fwVersion)
     val supportsL2capDownload: Boolean get() = FirmwareTier.supportsL2capDownload(fwVersion)
     val supportsNotifSender: Boolean get() = FirmwareTier.supportsNotifSender(fwVersion)
+    val requiresGattFwUpdate: Boolean get() = FirmwareTier.requiresGattFwUpdate(fwVersion)
 }

@@ -16,4 +16,5 @@ data class HpyConfig(
     val autoReconnect: Boolean = true,
     val fwStreamInterBlockDelayMs: Long = 30L,
     val fwStreamDrainDelayMs: Long = 2000L,
+    val fwUpdateUseGatt: Boolean = false,
 )

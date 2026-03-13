@@ -52,6 +52,26 @@ class FirmwareTierTest {
     }
 
     @Test
+    fun gattFwUpdate_required() {
+        assertTrue(FirmwareTier.requiresGattFwUpdate("2.4.0.0"))
+        assertTrue(FirmwareTier.requiresGattFwUpdate("2.4.1.5"))
+        assertTrue(FirmwareTier.requiresGattFwUpdate("2.5.0.0"))
+        assertTrue(FirmwareTier.requiresGattFwUpdate("2.5.0.51"))
+        assertTrue(FirmwareTier.requiresGattFwUpdate("2.5.1.0"))
+    }
+
+    @Test
+    fun gattFwUpdate_notRequired() {
+        assertFalse(FirmwareTier.requiresGattFwUpdate("2.5.0.52"))
+        assertFalse(FirmwareTier.requiresGattFwUpdate("2.5.0.54"))
+        assertFalse(FirmwareTier.requiresGattFwUpdate("2.5.1.1"))
+        assertFalse(FirmwareTier.requiresGattFwUpdate("2.5.2.0"))
+        assertFalse(FirmwareTier.requiresGattFwUpdate("3.0.0.0"))
+        assertFalse(FirmwareTier.requiresGattFwUpdate(""))
+        assertFalse(FirmwareTier.requiresGattFwUpdate("0.0.0.0"))
+    }
+
+    @Test
     fun l2capDownload_notSupported() {
         assertFalse(FirmwareTier.supportsL2capDownload("2.5.0.53"))
         assertFalse(FirmwareTier.supportsL2capDownload("2.5.0.0"))

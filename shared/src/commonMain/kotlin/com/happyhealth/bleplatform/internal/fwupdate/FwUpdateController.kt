@@ -14,6 +14,7 @@ internal sealed class FwUpdateAction {
         val delayMs: Long,
         val drainDelayMs: Long,
     ) : FwUpdateAction()
+    data class StartGattStream(val imageBytes: ByteArray, val blockSize: Int) : FwUpdateAction()
     data class EmitEvent(val event: HpyEvent) : FwUpdateAction()
     data class ScheduleCallback(val delayMs: Long, val tag: String) : FwUpdateAction()
     data object SessionComplete : FwUpdateAction()
@@ -26,6 +27,7 @@ internal class FwUpdateController(
     private val imageBytes: ByteArray,
     private val streamInterBlockDelayMs: Long = L2CAP_STREAM_DELAY_MS,
     private val streamDrainDelayMs: Long = L2CAP_STREAM_DRAIN_MS,
+    private val useGatt: Boolean = false,
 ) {
     enum class State {
         IDLE, FLASH, PATCH_LEN, STREAMING, WAIT_CLOSE, FINALIZE, RESET,
@@ -88,10 +90,14 @@ internal class FwUpdateController(
             "stream" -> {
                 if (state != State.PATCH_LEN) return FwUpdateAction.NoOp
                 state = State.STREAMING
-                FwUpdateAction.StartL2capStream(
-                    L2CAP_SUOTA_PSM, imageBytes, SUOTA_BLOCK_SIZE,
-                    streamInterBlockDelayMs, streamDrainDelayMs,
-                )
+                if (useGatt) {
+                    FwUpdateAction.StartGattStream(imageBytes, SUOTA_BLOCK_SIZE)
+                } else {
+                    FwUpdateAction.StartL2capStream(
+                        L2CAP_SUOTA_PSM, imageBytes, SUOTA_BLOCK_SIZE,
+                        streamInterBlockDelayMs, streamDrainDelayMs,
+                    )
+                }
             }
             "finalize" -> {
                 if (state != State.WAIT_CLOSE) return FwUpdateAction.NoOp
@@ -117,8 +123,9 @@ internal class FwUpdateController(
 
     fun onStreamError(msg: String): FwUpdateAction {
         state = State.ERROR
+        val prefix = if (useGatt) "GATT stream error" else "L2CAP stream error"
         return FwUpdateAction.EmitEvent(
-            HpyEvent.Error(connId, HpyErrorCode.FW_TRANSFER_FAIL, "L2CAP stream error: $msg")
+            HpyEvent.Error(connId, HpyErrorCode.FW_TRANSFER_FAIL, "$prefix: $msg")
         )
     }
 

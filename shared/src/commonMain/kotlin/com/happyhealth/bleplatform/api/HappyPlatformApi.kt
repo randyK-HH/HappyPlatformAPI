@@ -258,4 +258,5 @@ private fun mapToConnectionConfig(config: HpyConfig): ConnectionConfig = Connect
     downloadFailsafeIntervalMs = config.downloadFailsafeIntervalMs,
     memfaultMinIntervalMs = config.memfaultMinIntervalMs,
     autoReconnect = config.autoReconnect,
+    fwUpdateUseGatt = config.fwUpdateUseGatt,
 )

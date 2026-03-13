@@ -71,6 +71,8 @@ class ConnectionSlot(
     // FW update
     private var fwUpdateController: FwUpdateController? = null
     private var fwUpdateJob: Job? = null
+    private var fwGattWriteDeferred: CompletableDeferred<Int>? = null
+    private var fwSuotaCmpOkCount: Int = 0
     private var fwErrorPendingDisconnect: Boolean = false
     private var fwErrorFallbackJob: Job? = null
 
@@ -341,8 +343,15 @@ class ConnectionSlot(
 
     fun startFwUpdate(imageBytes: ByteArray) {
         if (state != HpyConnectionState.READY && state != HpyConnectionState.CONNECTED_LIMITED) return
+        val useGatt = config.fwUpdateUseGatt || deviceInfo.requiresGattFwUpdate
+        if (deviceInfo.requiresGattFwUpdate && !config.fwUpdateUseGatt) {
+            log("FW update transport: GATT (FORCED - FW ${deviceInfo.fwVersion} requires GATT)")
+        } else {
+            log("FW update transport: ${if (useGatt) "GATT" else "L2CAP"}")
+        }
         val controller = FwUpdateController(
             connId, imageBytes, config.fwStreamInterBlockDelayMs, config.fwStreamDrainDelayMs,
+            useGatt = useGatt,
         )
         fwUpdateController = controller
         transition(HpyConnectionState.FW_UPDATING)
@@ -390,6 +399,42 @@ class ConnectionSlot(
                 shim.l2capStreamSend(connId, action.psm, action.imageBytes,
                     action.blockSize, action.delayMs, action.drainDelayMs)
             }
+            is FwUpdateAction.StartGattStream -> {
+                val controller = fwUpdateController ?: return
+                val blockSize = action.blockSize
+                val image = action.imageBytes
+                val totalBlocks = (image.size + blockSize - 1) / blockSize
+                log("FW GATT stream: ${image.size} bytes, $totalBlocks blocks")
+                fwUpdateJob = scope.launch {
+                    var offset = 0
+                    var blocksSent = 0
+                    while (offset < image.size) {
+                        val end = minOf(offset + blockSize, image.size)
+                        val chunk = image.copyOfRange(offset, end)
+                        val deferred = CompletableDeferred<Int>()
+                        fwGattWriteDeferred = deferred
+                        shim.writeCharacteristic(connId, HpyCharId.SUOTA_PATCH_DATA, chunk, WriteType.WITH_RESPONSE)
+                        val status = try {
+                            withTimeout(10_000L) { deferred.await() }
+                        } catch (_: TimeoutCancellationException) {
+                            fwGattWriteDeferred = null
+                            handleFwUpdateAction(controller.onStreamError("GATT write timeout"))
+                            return@launch
+                        }
+                        fwGattWriteDeferred = null
+                        if (status != 0) {
+                            handleFwUpdateAction(controller.onStreamError("GATT write failed (status=$status)"))
+                            return@launch
+                        }
+                        offset = end
+                        blocksSent++
+                        if (blocksSent % 10 == 0 || blocksSent == totalBlocks) {
+                            handleFwUpdateAction(controller.onStreamProgress(blocksSent, totalBlocks))
+                        }
+                    }
+                    handleFwUpdateAction(controller.onStreamComplete())
+                }
+            }
             is FwUpdateAction.EmitEvent -> {
                 emitEvent(action.event)
                 // If the controller entered ERROR state, clean up but DON'T go to READY yet —
@@ -400,7 +445,9 @@ class ConnectionSlot(
                     fwUpdateJob?.cancel()
                     fwUpdateJob = null
                     fwErrorPendingDisconnect = true
-                    val timingMsg = "interBlockDelay=${config.fwStreamInterBlockDelayMs}ms, drainDelay=${config.fwStreamDrainDelayMs}ms"
+                    val wasGatt = config.fwUpdateUseGatt || deviceInfo.requiresGattFwUpdate
+                    val timingMsg = if (wasGatt) "transport=GATT"
+                        else "interBlockDelay=${config.fwStreamInterBlockDelayMs}ms, drainDelay=${config.fwStreamDrainDelayMs}ms"
                     log("FW update error — awaiting disconnect ($timingMsg)")
                     emitEvent(HpyEvent.Log(connId, "FW update error ($timingMsg)"))
                     fwErrorFallbackJob = scope.launch {
@@ -424,7 +471,9 @@ class ConnectionSlot(
                 fwUpdateController = null
                 fwUpdateJob = null
                 wasFwUpdateRebooting = true
-                val timingMsg = "interBlockDelay=${config.fwStreamInterBlockDelayMs}ms, drainDelay=${config.fwStreamDrainDelayMs}ms"
+                val wasGatt = config.fwUpdateUseGatt || deviceInfo.requiresGattFwUpdate
+                val timingMsg = if (wasGatt) "transport=GATT"
+                    else "interBlockDelay=${config.fwStreamInterBlockDelayMs}ms, drainDelay=${config.fwStreamDrainDelayMs}ms"
                 log("FW update complete — releasing GATT for ring reboot ($timingMsg)")
                 emitEvent(HpyEvent.Log(connId, "FW update complete ($timingMsg)"))
                 transition(HpyConnectionState.FW_UPDATE_REBOOTING)
@@ -610,7 +659,21 @@ class ConnectionSlot(
                 val controller = fwUpdateController ?: return
                 if (value.isEmpty()) return
                 val statusCode = value[0].toUByte().toInt()
-                log("SUOTA_STATUS: $statusCode (${FwUpdateController.suotaStatusName(statusCode)})")
+                if (statusCode == FwUpdateController.SUOTA_CMP_OK &&
+                    controller.currentState == FwUpdateController.State.STREAMING
+                ) {
+                    fwSuotaCmpOkCount++
+                } else if (statusCode == FwUpdateController.SUOTA_CMP_OK && fwSuotaCmpOkCount > 0) {
+                    fwSuotaCmpOkCount++
+                    log("SUOTA_STATUS: CMP_OK ($fwSuotaCmpOkCount)")
+                    fwSuotaCmpOkCount = 0
+                } else {
+                    if (fwSuotaCmpOkCount > 0) {
+                        log("SUOTA_STATUS: CMP_OK ($fwSuotaCmpOkCount)")
+                        fwSuotaCmpOkCount = 0
+                    }
+                    log("SUOTA_STATUS: $statusCode (${FwUpdateController.suotaStatusName(statusCode)})")
+                }
                 handleFwUpdateAction(controller.onSuotaStatus(statusCode))
             }
             else -> {}
@@ -618,6 +681,11 @@ class ConnectionSlot(
     }
 
     fun onWriteComplete(charId: HpyCharId, status: Int) {
+        // GATT FW streaming: complete the deferred so the write loop advances
+        if (charId == HpyCharId.SUOTA_PATCH_DATA && fwGattWriteDeferred != null) {
+            fwGattWriteDeferred?.complete(status)
+            return
+        }
         val cmd = commandQueue.currentCommand ?: return
         if (cmd.completionType == CompletionType.ON_WRITE_ACK) {
             commandQueue.signalDone()
@@ -770,6 +838,9 @@ class ConnectionSlot(
         fwUpdateController = null
         fwUpdateJob?.cancel()
         fwUpdateJob = null
+        fwGattWriteDeferred?.cancel()
+        fwGattWriteDeferred = null
+        fwSuotaCmpOkCount = 0
         throughputTimeoutJob?.cancel()
         throughputTimeoutJob = null
         throughputExpectedPackets = 0

@@ -54,6 +54,45 @@ enum class FirmwareTier {
         }
 
         /**
+         * Check if this firmware version requires GATT-based FW updates because
+         * its SUOTA L2CAP implementation is broken.
+         *
+         * Affected versions:
+         * - All 2.4.x.x (Tier 1 — no L2CAP SUOTA support)
+         * - 2.5.0.BUILD where BUILD < 52
+         * - 2.5.1.0 (FDA release with broken L2CAP SUOTA)
+         *
+         * Unaffected: 2.5.0.52+, 2.5.1.1+, 2.5.2+, 3.x+, bootloader, mfg
+         */
+        fun requiresGattFwUpdate(version: String): Boolean {
+            val parts = version.trim().split(".")
+            if (parts.size < 4) return false
+
+            val project = parts[0].toIntOrNull() ?: return false
+            val major = parts[1].toIntOrNull() ?: return false
+            val minor = parts[2].toIntOrNull() ?: return false
+            val build = parts[3].substringBefore('-').toIntOrNull() ?: return false
+
+            // Only application FW (project 2) is relevant
+            if (project != 2) return false
+
+            // 2.4.x.x — Tier 1, no L2CAP SUOTA
+            if (major == 4) return true
+
+            // Below 2.5 is not application FW we'd update
+            if (major < 5) return false
+
+            // 2.5.0.BUILD: broken below build 52
+            if (minor == 0) return build < 52
+
+            // 2.5.1.0 exactly: FDA release with broken L2CAP SUOTA
+            if (minor == 1 && build == 0) return true
+
+            // 2.5.1.1+, 2.5.2+, etc. — fixed
+            return false
+        }
+
+        /**
          * Check if L2CAP download is supported for the given firmware version.
          * Requires FW >= 2.5.0.54 (or FDA equivalents >= 2.5.1.0).
          */

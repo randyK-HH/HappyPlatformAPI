@@ -11,6 +11,7 @@ import com.happyhealth.bleplatform.internal.shim.PlatformBleShim
 import com.happyhealth.bleplatform.internal.shim.PlatformTimeSource
 import com.happyhealth.bleplatform.internal.shim.ShimCallback
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -92,64 +93,68 @@ class ConnectionManager(
 
     override fun onDeviceDiscovered(deviceHandle: Any, name: String, address: String, rssi: Int,
                                     manufacturerData: ByteArray?) {
-        // Parse ring color and size from manufacturer-specific data.
-        // Format (after company ID): [formatVersion][color][size]
-        var ringSize = 0
-        var ringColor = 0
-        if (manufacturerData != null && manufacturerData.size >= 3) {
-            ringColor = manufacturerData[1].toInt() and 0xFF
-            ringSize = manufacturerData[2].toInt() and 0xFF
+        scope.launch {
+            // Parse ring color and size from manufacturer-specific data.
+            // Format (after company ID): [formatVersion][color][size]
+            var ringSize = 0
+            var ringColor = 0
+            if (manufacturerData != null && manufacturerData.size >= 3) {
+                ringColor = manufacturerData[1].toInt() and 0xFF
+                ringSize = manufacturerData[2].toInt() and 0xFF
+            }
+            val existing = _discoveredDevices.value.toMutableList()
+            val idx = existing.indexOfFirst { it.address == address }
+            val info = ScannedDeviceInfo(deviceHandle, name, address, rssi, ringSize, ringColor)
+            if (idx >= 0) existing[idx] = info else existing.add(info)
+            _discoveredDevices.value = existing
+            events.tryEmit(HpyEvent.DeviceDiscovered(name, address, rssi, deviceHandle))
         }
-        val existing = _discoveredDevices.value.toMutableList()
-        val idx = existing.indexOfFirst { it.address == address }
-        val info = ScannedDeviceInfo(deviceHandle, name, address, rssi, ringSize, ringColor)
-        if (idx >= 0) existing[idx] = info else existing.add(info)
-        _discoveredDevices.value = existing
-        events.tryEmit(HpyEvent.DeviceDiscovered(name, address, rssi, deviceHandle))
     }
 
     override fun onConnected(connId: ConnectionId) {
-        getSlot(connId)?.onConnected()
+        scope.launch { getSlot(connId)?.onConnected() }
     }
 
     override fun onDisconnected(connId: ConnectionId, status: Int) {
-        val slot = getSlot(connId)
-        slot?.onDisconnected(status)
-        if (slot?.state == HpyConnectionState.DISCONNECTED) {
-            slots[connId.value] = null
+        scope.launch {
+            val slot = getSlot(connId)
+            slot?.onDisconnected(status)
+            if (slot?.state == HpyConnectionState.DISCONNECTED) {
+                slots[connId.value] = null
+            }
         }
     }
 
     override fun onServicesDiscovered(connId: ConnectionId, availableChars: Set<HpyCharId>) {
-        getSlot(connId)?.onServicesDiscovered(availableChars)
+        scope.launch { getSlot(connId)?.onServicesDiscovered(availableChars) }
     }
 
     override fun onCharacteristicRead(connId: ConnectionId, charId: HpyCharId, value: ByteArray) {
-        getSlot(connId)?.onCharacteristicRead(charId, value)
+        scope.launch { getSlot(connId)?.onCharacteristicRead(charId, value) }
     }
 
     override fun onCharacteristicReadFailed(connId: ConnectionId, charId: HpyCharId) {
-        getSlot(connId)?.onCharacteristicReadFailed(charId)
+        scope.launch { getSlot(connId)?.onCharacteristicReadFailed(charId) }
     }
 
     override fun onCharacteristicChanged(connId: ConnectionId, charId: HpyCharId, value: ByteArray) {
-        getSlot(connId)?.onCharacteristicChanged(charId, value)
+        scope.launch { getSlot(connId)?.onCharacteristicChanged(charId, value) }
     }
 
     override fun onWriteComplete(connId: ConnectionId, charId: HpyCharId, status: Int) {
-        getSlot(connId)?.onWriteComplete(charId, status)
+        scope.launch { getSlot(connId)?.onWriteComplete(charId, status) }
     }
 
     override fun onDescriptorWritten(connId: ConnectionId, charId: HpyCharId, status: Int) {
-        getSlot(connId)?.onDescriptorWritten(charId, status)
+        scope.launch { getSlot(connId)?.onDescriptorWritten(charId, status) }
     }
 
     override fun onMtuChanged(connId: ConnectionId, mtu: Int) {
-        getSlot(connId)?.onMtuChanged(mtu)
+        scope.launch { getSlot(connId)?.onMtuChanged(mtu) }
     }
 
     override fun onRssiRead(connId: ConnectionId, rssi: Int) {
-        getSlot(connId)?.onRssiRead(rssi)
+        scope.launch { getSlot(connId)?.onRssiRead(rssi) }
     }
 
     fun readRssi(connId: ConnectionId) {
@@ -157,47 +162,47 @@ class ConnectionManager(
     }
 
     override fun onL2capConnected(connId: ConnectionId) {
-        getSlot(connId)?.onL2capConnected()
+        scope.launch { getSlot(connId)?.onL2capConnected() }
     }
 
     override fun onL2capFrame(connId: ConnectionId, frameData: ByteArray) {
-        getSlot(connId)?.onL2capFrame(frameData)
+        scope.launch { getSlot(connId)?.onL2capFrame(frameData) }
     }
 
     override fun onL2capBatchComplete(connId: ConnectionId, framesReceived: Int, crcValid: Boolean) {
-        getSlot(connId)?.onL2capBatchComplete(framesReceived, crcValid)
+        scope.launch { getSlot(connId)?.onL2capBatchComplete(framesReceived, crcValid) }
     }
 
     override fun onL2capCrcTimeout(connId: ConnectionId, framesReceived: Int) {
-        getSlot(connId)?.onL2capCrcTimeout(framesReceived)
+        scope.launch { getSlot(connId)?.onL2capCrcTimeout(framesReceived) }
     }
 
     override fun onL2capThroughputProgress(connId: ConnectionId, packetsReceived: Int, expectedPackets: Int) {
-        getSlot(connId)?.onL2capThroughputProgress(packetsReceived, expectedPackets)
+        scope.launch { getSlot(connId)?.onL2capThroughputProgress(packetsReceived, expectedPackets) }
     }
 
     override fun onL2capThroughputComplete(connId: ConnectionId, packetsReceived: Int, elapsedMs: Long) {
-        getSlot(connId)?.onL2capThroughputComplete(packetsReceived, elapsedMs)
+        scope.launch { getSlot(connId)?.onL2capThroughputComplete(packetsReceived, elapsedMs) }
     }
 
     override fun onL2capThroughputTimeout(connId: ConnectionId, packetsReceived: Int, elapsedMs: Long) {
-        getSlot(connId)?.onL2capThroughputTimeout(packetsReceived, elapsedMs)
+        scope.launch { getSlot(connId)?.onL2capThroughputTimeout(packetsReceived, elapsedMs) }
     }
 
     override fun onL2capError(connId: ConnectionId, message: String) {
-        getSlot(connId)?.onL2capError(message)
+        scope.launch { getSlot(connId)?.onL2capError(message) }
     }
 
     override fun onL2capSendProgress(connId: ConnectionId, blocksSent: Int, blocksTotal: Int) {
-        getSlot(connId)?.onL2capSendProgress(blocksSent, blocksTotal)
+        scope.launch { getSlot(connId)?.onL2capSendProgress(blocksSent, blocksTotal) }
     }
 
     override fun onL2capSendComplete(connId: ConnectionId) {
-        getSlot(connId)?.onL2capSendComplete()
+        scope.launch { getSlot(connId)?.onL2capSendComplete() }
     }
 
     override fun onL2capSendError(connId: ConnectionId, message: String) {
-        getSlot(connId)?.onL2capSendError(message)
+        scope.launch { getSlot(connId)?.onL2capSendError(message) }
     }
 
     fun destroy() {

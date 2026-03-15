@@ -13,6 +13,8 @@ import com.happyhealth.bleplatform.internal.shim.PlatformBleShim
 import com.happyhealth.bleplatform.internal.shim.PlatformTimeSource
 import com.happyhealth.bleplatform.internal.shim.ShimCallback
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.SharedFlow
@@ -225,17 +227,19 @@ class HappyPlatformApi internal constructor(
 }
 
 /** Overload without [scope] for Apple targets where Kotlin default parameters are not bridged. */
+@OptIn(ExperimentalCoroutinesApi::class)
 fun createHappyPlatformApi(
     shim: PlatformBleShim,
     timeSource: PlatformTimeSource,
     config: HpyConfig,
-): HappyPlatformApi = createHappyPlatformApi(shim, timeSource, config, CoroutineScope(SupervisorJob()))
+): HappyPlatformApi = createHappyPlatformApi(shim, timeSource, config, CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1)))
 
+@OptIn(ExperimentalCoroutinesApi::class)
 fun createHappyPlatformApi(
     shim: PlatformBleShim,
     timeSource: PlatformTimeSource,
     config: HpyConfig = HpyConfig(),
-    scope: CoroutineScope = CoroutineScope(SupervisorJob()),
+    scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1)),
 ): HappyPlatformApi {
     val connConfig = mapToConnectionConfig(config)
     val manager = ConnectionManager(shim, timeSource, scope, connConfig)
